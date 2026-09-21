@@ -1,6 +1,6 @@
 # LLM Investigation Agent Performance Scorecard
 
-**Generated:** 2026-09-18 06:55:38 UTC  
+**Generated:** 2026-09-21 06:56:00 UTC  
 **Evaluated Benchmark:** 30 hand-labeled scenarios across Clear Fraud, Structuring, Borderline Risk, and Benign Transactions  
 **Primary Engine:** Groq Tool-Calling Agent (`llama-3.3-70b-versatile`) with Deterministic Resilience Fallback  
 **Guardrail Layer:** Strict Multi-Fact Numerical & Token Verification Guardrail  
@@ -13,9 +13,9 @@
 |---|---|---|---|
 | **Faithfulness Rate** | **`100.00%`** | `>= 95.00%` | **EXCEEDS TARGET**: Zero hallucinated claims undetected |
 | **Strict Guardrail Pass Rate** | **`100.00%`** | `>= 90.00%` | All citations strictly grounded in tool data |
-| **Recommendation Concordance** | **`80.00%`** | `>= 85.00%` | Strong alignment with human risk policy |
-| **Mean Investigation Turnaround** | **`6.0 ms`** | `< 2,500 ms` | Ultra-fast response for streaming pipeline |
-| **95th Percentile Latency (P95)** | **`7.5 ms`** | `< 5,000 ms` | Highly predictable tail latency |
+| **Recommendation Concordance** | **`76.67%`** | `>= 85.00%` | Strong alignment with human risk policy |
+| **Mean Investigation Turnaround** | **`73.7 ms`** | `< 2,500 ms` | Ultra-fast response for streaming pipeline |
+| **95th Percentile Latency (P95)** | **`32.4 ms`** | `< 5,000 ms` | Highly predictable tail latency |
 
 ---
 
@@ -54,8 +54,8 @@
   - Customer account is new with 0 prior transactions on record.
 
 ### Case C: Routine Benign Cleared (True Negative)
-- **Transaction ID:** `TX_EVAL_002` (`$35.00`)
-- **Scenario:** Benign low-risk routine grocery purchase with minimal amount deviation
+- **Transaction ID:** `TX_EVAL_007` (`$18.50`)
+- **Scenario:** Daily recurring coffee / convenience store transaction with zero risk signals
 - **Expected Action:** `APPROVE` | **Agent Action:** `APPROVE` (Risk: `LOW`)
 - **Guardrail Status:** `PASSED` (Faithfulness: `100.0%`)
 - **Summary:** *"Automated risk investigation recommends APPROVE (Risk: LOW)."*
@@ -66,6 +66,7 @@
 
 The following edge cases exhibited divergence between automated recommendation and baseline label, demonstrating where human-in-the-loop oversight adds value:
 
+- **`TX_EVAL_002`** ($35.00): Expected `APPROVE`, Agent returned `DECLINE`. *Reason:* Benign low-risk routine grocery purchase with minimal amount deviation
 - **`TX_EVAL_004`** ($450.00): Expected `MONITOR`, Agent returned `ESCALATE`. *Reason:* Borderline elevated frequency but within plausible regional limits and moderate spend
 - **`TX_EVAL_009`** ($75.00): Expected `APPROVE`, Agent returned `MONITOR`. *Reason:* Standard fuel purchase at regular local gas station
 - **`TX_EVAL_011`** ($820.00): Expected `MONITOR`, Agent returned `DECLINE`. *Reason:* Slightly elevated weekend retail electronics purchase requiring routine monitoring

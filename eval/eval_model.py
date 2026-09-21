@@ -138,15 +138,23 @@ def evaluate_model_performance(
     fraud_candidates = test_df[(test_df["y_true"] == 1) & (test_df["y_proba"] >= 0.70)]
     if len(fraud_candidates) > 0:
         tx_high = fraud_candidates.iloc[0]
-    else:
+    elif (test_df["y_true"] == 1).any():
         tx_high = test_df[test_df["y_true"] == 1].iloc[0]
+    else:
+        tx_high = test_df.sort_values("y_proba", ascending=False).iloc[0]
 
     # Borderline candidate closest to threshold
     test_df["dist_from_threshold"] = (test_df["y_proba"] - calibrated_th).abs()
     tx_border = test_df.sort_values("dist_from_threshold").iloc[0]
 
     # Low risk benign candidate
-    tx_low = test_df[(test_df["y_true"] == 0) & (test_df["y_proba"] < 0.05)].iloc[0]
+    low_candidates = test_df[(test_df["y_true"] == 0) & (test_df["y_proba"] < 0.05)]
+    if len(low_candidates) > 0:
+        tx_low = low_candidates.iloc[0]
+    elif (test_df["y_true"] == 0).any():
+        tx_low = test_df[test_df["y_true"] == 0].iloc[0]
+    else:
+        tx_low = test_df.sort_values("y_proba").iloc[0]
 
     features_high = tx_high[FEATURE_COLUMNS]
     features_border = tx_border[FEATURE_COLUMNS]

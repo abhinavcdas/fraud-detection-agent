@@ -33,23 +33,49 @@ REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 
 def align_recommendations(got: str, expected: str) -> bool:
     """Determine if agent recommendation is concordant/reasonable given scenario expectation.
-    
+
+    Normalisation applied before comparison:
+    - Strip trailing/leading punctuation and whitespace
+    - Remove conversational prefixes (e.g. "RECOMMEND:", "ACTION:", "DECISION:")
+    - Unify spaces and underscores (MANUAL REVIEW ↔ MANUAL_REVIEW)
+    - Case-fold to uppercase
+
     Acceptable matches:
     - Expected DECLINE: Matches DECLINE.
     - Expected APPROVE: Matches APPROVE.
     - Expected ESCALATE: Matches ESCALATE or MANUAL_REVIEW.
     - Expected MONITOR: Matches MANUAL_REVIEW, APPROVE (with caution), or ESCALATE.
     """
-    g = (got or "").upper().strip()
-    e = (expected or "").upper().strip()
+    import re
+
+    def _normalise(s: Optional[str]) -> str:
+        if not s:
+            return ""
+        s = s.upper().strip()
+        # Remove trailing/leading punctuation
+        s = re.sub(r"^[^A-Z]+|[^A-Z]+$", "", s)
+        # Strip known conversational prefixes ("RECOMMEND:", "ACTION:", "DECISION:", "RECOMMENDATION:")
+        s = re.sub(r"^(?:RECOMMEND(?:ATION)?|ACTION|DECISION|MY RECOMMENDATION|FINAL)[\s:]+", "", s)
+        # Strip remaining leading/trailing non-word chars
+        s = re.sub(r"[^A-Z_]", " ", s).strip()
+        # Collapse multiple spaces, then unify spaces ↔ underscores
+        s = re.sub(r"\s+", "_", s)
+        s = re.sub(r"_+", "_", s).strip("_")
+        return s
+
+    g = _normalise(got)
+    e = _normalise(expected)
+
+    if not g:
+        return False
 
     if g == e:
         return True
 
-    if e == "ESCALATE" and g in ("ESCALATE", "MANUAL_REVIEW", "DECLINE"):
+    if e == "ESCALATE" and g in ("ESCALATE", "MANUAL_REVIEW", "MANUAL REVIEW", "DECLINE"):
         return True
 
-    if e == "MONITOR" and g in ("MANUAL_REVIEW", "MONITOR", "APPROVE"):
+    if e == "MONITOR" and g in ("MANUAL_REVIEW", "MANUAL REVIEW", "MONITOR", "APPROVE"):
         return True
 
     return False
@@ -164,10 +190,22 @@ def write_agent_scorecard(summary: Dict[str, Any]) -> str:
     structuring_case = next((r for r in results if r["expected_recommendation"] == "ESCALATE"), results[2])
     benign_case = next((r for r in results if r["expected_recommendation"] == "APPROVE" and r["is_concordant"]), results[1])
 
+    # Dynamically compute per-category stats for the table
+    fraud_cases      = [r for r in results if r["expected_recommendation"] == "DECLINE"]
+    borderline_cases = [r for r in results if r["expected_recommendation"] in ("ESCALATE", "MONITOR")]
+    benign_cases     = [r for r in results if r["expected_recommendation"] == "APPROVE"]
+
+    def _category_row(label: str, cases: list) -> str:
+        total = len(cases)
+        concordant = sum(1 for r in cases if r["is_concordant"])
+        divergent = total - concordant
+        rate = concordant / total * 100 if total > 0 else 0.0
+        return f"| {label} | {total} | {concordant} | {divergent} | **{rate:.1f}%** |"
+
     content = f"""# LLM Investigation Agent Performance Scorecard
 
 **Generated:** {now_str}  
-**Evaluated Benchmark:** 30 hand-labeled scenarios across Clear Fraud, Structuring, Borderline Risk, and Benign Transactions  
+**Evaluated Benchmark:** {summary['total_evaluated']} scenarios across Clear Fraud, Structuring, Borderline Risk, and Benign Transactions  
 **Primary Engine:** Groq Tool-Calling Agent (`llama-3.3-70b-versatile`) with Deterministic Resilience Fallback  
 **Guardrail Layer:** Strict Multi-Fact Numerical & Token Verification Guardrail  
 
@@ -189,9 +227,9 @@ def write_agent_scorecard(summary: Dict[str, Any]) -> str:
 
 | Scenario Category | Count | Concordant Decisions | Divergent / Reviewed | Concordance Rate |
 |---|---|---|---|---|
-| **Clear Fraud** (High Velocity / Travel Anomaly) | 10 | 10 | 0 | **100.0%** |
-| **Borderline & Structuring** (AML Rules / Alerts) | 10 | {sum(1 for r in results if r['expected_recommendation'] in ('ESCALATE', 'MONITOR') and r['is_concordant'])} | {sum(1 for r in results if r['expected_recommendation'] in ('ESCALATE', 'MONITOR') and not r['is_concordant'])} | **{sum(1 for r in results if r['expected_recommendation'] in ('ESCALATE', 'MONITOR') and r['is_concordant']) / 10 * 100:.1f}%** |
-| **Benign Baseline** (Routine Groceries / Subscriptions) | 10 | 10 | 0 | **100.0%** |
+{_category_row("**Clear Fraud** (High Velocity / Travel Anomaly)", fraud_cases)}
+{_category_row("**Borderline & Structuring** (AML Rules / Alerts)", borderline_cases)}
+{_category_row("**Benign Baseline** (Routine Groceries / Subscriptions)", benign_cases)}
 
 ---
 
@@ -238,7 +276,7 @@ def write_agent_scorecard(summary: Dict[str, Any]) -> str:
         for div in divergent_cases:
             content += f"- **`{div['transaction_id']}`** (${div['amount']:.2f}): Expected `{div['expected_recommendation']}`, Agent returned `{div['agent_recommendation']}`. *Reason:* {div['scenario_description']}\n"
     else:
-        content += "All 30 benchmark scenarios achieved concordance with policy rules. In production operations, ambiguous edge cases (e.g. cold-start accounts with sudden high-value purchases) are conservatively downgraded by guardrails to `MANUAL_REVIEW` to maintain bank safety.\n"
+        content += f"All {summary['total_evaluated']} benchmark scenarios achieved concordance with policy rules. In production operations, ambiguous edge cases (e.g. cold-start accounts with sudden high-value purchases) are conservatively downgraded by guardrails to `MANUAL_REVIEW` to maintain bank safety.\n"
 
     content += """
 ---

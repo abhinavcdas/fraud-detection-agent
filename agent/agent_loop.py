@@ -234,18 +234,47 @@ def run_investigation(transaction: Dict[str, Any], max_turns: int = 4) -> Dict[s
                         "content": json.dumps(out)
                     })
             elif "<tool_call>" in raw_content or "<function=" in raw_content:
-                # Handle models emitting inline pseudo-tool calling syntax
-                match = re.search(r"<function=([a-zA-Z0-9_]+)>(.*?)(?:</function>|</tool_call>|$)", raw_content, re.DOTALL)
-                if match:
-                    fn_name = match.group(1).strip()
-                    args_str = match.group(2).strip()
+                # Handle models emitting inline pseudo-tool calling syntax.
+                # Pattern A (open-weights JSON): <tool_call>{"name": ..., "arguments": ...}</tool_call>
+                # Pattern B (some variants):     <tool_call>{"tool": ..., "parameters": ...}</tool_call>
+                # Pattern C (older format):      <function=name>...</function>
+                inline_called = False
+                fn_name, fn_args = None, {}
+
+                # Try Pattern A / B: extract JSON body from <tool_call> tag
+                tc_match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", raw_content, re.DOTALL)
+                if tc_match:
                     try:
-                        fn_args = json.loads(args_str) if args_str else {}
-                    except json.JSONDecodeError:
+                        tc_body = json.loads(tc_match.group(1))
+                        fn_name = tc_body.get("name") or tc_body.get("tool")
+                        fn_args = tc_body.get("arguments") or tc_body.get("parameters") or {}
+                        if isinstance(fn_args, str):
+                            fn_args = json.loads(fn_args)
+                    except (json.JSONDecodeError, AttributeError):
+                        fn_name = None
                         fn_args = {}
+
+                # Fall back to Pattern C: <function=name>args</function>
+                if not fn_name:
+                    fn_match = re.search(
+                        r"<function=([a-zA-Z0-9_]+)>(.*?)(?:</function>|</tool_call>|$)",
+                        raw_content, re.DOTALL
+                    )
+                    if fn_match:
+                        fn_name = fn_match.group(1).strip()
+                        args_str = fn_match.group(2).strip()
+                        try:
+                            fn_args = json.loads(args_str) if args_str else {}
+                        except json.JSONDecodeError:
+                            fn_args = {}
+
+                if fn_name:
                     out = execute_tool_call(fn_name, fn_args)
                     collected_tool_outputs.append(out)
-                    tx_logger.debug("Executed inline agent tool: {fn} | args={args}", fn=fn_name, args=fn_args)
+                    tx_logger.debug(
+                        "Executed inline agent tool: {fn} | args={args}",
+                        fn=fn_name, args=fn_args
+                    )
                     messages.append({"role": "assistant", "content": raw_content})
                     messages.append({
                         "role": "user",

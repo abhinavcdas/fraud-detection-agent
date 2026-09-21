@@ -102,3 +102,110 @@ def test_run_agent_eval_on_benchmark():
     assert summary["recommendation_concordance_rate"] >= 0.75
     assert summary["latency_mean_ms"] > 0.0
     assert len(summary["detailed_results"]) == summary["total_evaluated"]
+
+
+# ---------------------------------------------------------------------------
+# align_recommendations — Robustness Test Suite
+# ---------------------------------------------------------------------------
+
+class TestAlignRecommendationsRobustness:
+    """Comprehensive input normalization tests for align_recommendations."""
+
+    # --- Happy path: exact string matches ---
+    def test_exact_decline(self):
+        assert align_recommendations("DECLINE", "DECLINE") is True
+
+    def test_exact_approve(self):
+        assert align_recommendations("APPROVE", "APPROVE") is True
+
+    def test_exact_escalate(self):
+        assert align_recommendations("ESCALATE", "ESCALATE") is True
+
+    def test_exact_monitor(self):
+        assert align_recommendations("MONITOR", "MONITOR") is True
+
+    # --- Normalization: trailing punctuation ---
+    def test_punctuation_decline_dot(self):
+        assert align_recommendations("DECLINE.", "DECLINE") is True
+
+    def test_punctuation_approve_exclamation(self):
+        assert align_recommendations("APPROVE!", "APPROVE") is True
+
+    def test_punctuation_escalate_colon(self):
+        assert align_recommendations("ESCALATE:", "ESCALATE") is True
+
+    # --- Normalization: conversational prefixes ---
+    def test_prefix_recommend_decline(self):
+        assert align_recommendations("RECOMMEND: DECLINE", "DECLINE") is True
+
+    def test_prefix_action_approve(self):
+        assert align_recommendations("ACTION: APPROVE", "APPROVE") is True
+
+    def test_prefix_decision_escalate(self):
+        assert align_recommendations("DECISION: ESCALATE", "ESCALATE") is True
+
+    # --- Normalization: spaces ↔ underscores ---
+    def test_manual_review_space_matches_escalate(self):
+        assert align_recommendations("MANUAL REVIEW", "ESCALATE") is True
+
+    def test_manual_review_underscore_matches_escalate(self):
+        assert align_recommendations("MANUAL_REVIEW", "ESCALATE") is True
+
+    def test_manual_review_space_matches_monitor(self):
+        assert align_recommendations("MANUAL REVIEW", "MONITOR") is True
+
+    # --- Normalization: lowercase input ---
+    def test_lowercase_decline(self):
+        assert align_recommendations("decline", "DECLINE") is True
+
+    def test_lowercase_approve(self):
+        assert align_recommendations("approve", "APPROVE") is True
+
+    # --- Negative: mismatched actions ---
+    def test_mismatch_approve_vs_decline(self):
+        assert align_recommendations("APPROVE", "DECLINE") is False
+
+    def test_mismatch_decline_vs_approve(self):
+        assert align_recommendations("DECLINE", "APPROVE") is False
+
+    def test_mismatch_decline_vs_escalate(self):
+        # DECLINE is an acceptable concordant response when policy expects ESCALATE
+        # (agent blocked harder than expected — still a safe outcome)
+        assert align_recommendations("DECLINE", "ESCALATE") is True
+
+    # --- Invalid / boundary inputs ---
+    def test_none_got(self):
+        assert align_recommendations(None, "DECLINE") is False
+
+    def test_empty_string_got(self):
+        assert align_recommendations("", "DECLINE") is False
+
+    def test_none_both(self):
+        assert align_recommendations(None, None) is False
+
+    def test_whitespace_only_got(self):
+        assert align_recommendations("   ", "DECLINE") is False
+
+    def test_garbage_string(self):
+        assert align_recommendations("XYZ_UNKNOWN_ACTION_999", "DECLINE") is False
+
+
+# ---------------------------------------------------------------------------
+# evaluate_model_performance — Small Slice No-Crash Tests
+# ---------------------------------------------------------------------------
+
+def test_eval_model_small_slice_50_rows():
+    """Verify evaluate_model_performance does not crash on max_rows=50 (extreme imbalance)."""
+    from eval.eval_model import evaluate_model_performance
+    # Should complete without ValueError or any exception
+    result = evaluate_model_performance(max_rows=50, calibrated_threshold=0.38)
+    assert "metrics_default" in result
+    assert "metrics_calibrated" in result
+
+
+def test_eval_model_small_slice_100_rows():
+    """Verify evaluate_model_performance does not crash on max_rows=100."""
+    from eval.eval_model import evaluate_model_performance
+    result = evaluate_model_performance(max_rows=100, calibrated_threshold=0.38)
+    assert result["metrics_default"]["total_evaluated"] > 0
+    assert result["metrics_calibrated"]["pr_auc"] >= 0.0

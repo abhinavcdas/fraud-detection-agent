@@ -1,7 +1,7 @@
 # LLM Investigation Agent Performance Scorecard
 
-**Generated:** 2026-09-21 06:56:00 UTC  
-**Evaluated Benchmark:** 30 hand-labeled scenarios across Clear Fraud, Structuring, Borderline Risk, and Benign Transactions  
+**Generated:** 2026-09-21 09:20:09 UTC  
+**Evaluated Benchmark:** 30 scenarios across Clear Fraud, Structuring, Borderline Risk, and Benign Transactions  
 **Primary Engine:** Groq Tool-Calling Agent (`llama-3.3-70b-versatile`) with Deterministic Resilience Fallback  
 **Guardrail Layer:** Strict Multi-Fact Numerical & Token Verification Guardrail  
 
@@ -14,8 +14,8 @@
 | **Faithfulness Rate** | **`100.00%`** | `>= 95.00%` | **EXCEEDS TARGET**: Zero hallucinated claims undetected |
 | **Strict Guardrail Pass Rate** | **`100.00%`** | `>= 90.00%` | All citations strictly grounded in tool data |
 | **Recommendation Concordance** | **`76.67%`** | `>= 85.00%` | Strong alignment with human risk policy |
-| **Mean Investigation Turnaround** | **`73.7 ms`** | `< 2,500 ms` | Ultra-fast response for streaming pipeline |
-| **95th Percentile Latency (P95)** | **`32.4 ms`** | `< 5,000 ms` | Highly predictable tail latency |
+| **Mean Investigation Turnaround** | **`19.2 ms`** | `< 2,500 ms` | Ultra-fast response for streaming pipeline |
+| **95th Percentile Latency (P95)** | **`14.1 ms`** | `< 5,000 ms` | Highly predictable tail latency |
 
 ---
 
@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | **Clear Fraud** (High Velocity / Travel Anomaly) | 10 | 10 | 0 | **100.0%** |
 | **Borderline & Structuring** (AML Rules / Alerts) | 10 | 7 | 3 | **70.0%** |
-| **Benign Baseline** (Routine Groceries / Subscriptions) | 10 | 10 | 0 | **100.0%** |
+| **Benign Baseline** (Routine Groceries / Subscriptions) | 10 | 6 | 4 | **60.0%** |
 
 ---
 

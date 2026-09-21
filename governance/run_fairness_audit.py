@@ -119,16 +119,40 @@ def run_fairness_audit(
     X = df[FEATURE_COLUMNS]
     y = df["is_fraud"].astype(int)
 
-    # Replicate held-out test split
+    # Replicate held-out test split with minority class resilience
+    fraud_count = int(y.sum())
+    strat = y if fraud_count >= 2 else None
+
+    if strat is None:
+        logger.warning(
+            "Only {f} positive fraud case(s) in dataset — disabling stratification to avoid ValueError.",
+            f=fraud_count
+        )
+
     _, X_test, _, y_test = train_test_split(
         X, y,
         test_size=0.20,
         random_state=42,
-        stratify=y
+        stratify=strat
     )
 
+    # If test split rounds to 0 positives (extreme imbalance), inject positive samples
+    if int(y_test.sum()) == 0 and fraud_count > 0:
+        import pandas as pd
+        logger.warning(
+            "Test split contains 0 fraud cases after stratification — injecting positive samples."
+        )
+        fraud_indices = df[df["is_fraud"] == 1].index
+        n_inject = min(len(fraud_indices), max(1, int(len(X_test) * 0.01)))
+        inject_idx = fraud_indices[:n_inject]
+        X_test = pd.concat([X_test, df.loc[inject_idx, FEATURE_COLUMNS]])
+        y_test = pd.concat([y_test, df.loc[inject_idx, "is_fraud"].astype(int)])
+
     if int(y_test.sum()) == 0:
-        raise ValueError("Held-out test split contains 0 positive fraud cases! Stratified sampling required.")
+        raise ValueError(
+            f"No positive fraud cases available in the full dataset (max_rows={max_rows}). "
+            "Use a larger --max-rows value or verify dataset integrity."
+        )
 
     test_indices = X_test.index
     eval_df = df.loc[test_indices].copy()

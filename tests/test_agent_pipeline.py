@@ -140,3 +140,161 @@ def test_investigation_benign_scenario():
     assert report["risk_level"] == "LOW"
     assert report["recommendation"] == "APPROVE"
     assert result["guardrails"]["status"] == "PASSED"
+
+
+# ---------------------------------------------------------------------------
+# Sad Path: LLM API Failure — Deterministic Fallback
+# ---------------------------------------------------------------------------
+
+class BrokenLLMForAgentTest:
+    """Simulates LLM/API being completely unavailable."""
+    async def investigate(self, transaction, context):
+        raise ConnectionError("Simulated 503 during agent pipeline test")
+
+
+def test_investigation_llm_failure_falls_back_gracefully():
+    """Sad path: LLM unavailable → deterministic fallback must complete without exception."""
+    import importlib, sys, os
+
+    # Ensure no GROQ_API_KEY so agent_loop routes to deterministic path
+    env_backup = os.environ.pop("GROQ_API_KEY", None)
+    try:
+        # Re-import to pick up env change (module may cache)
+        if "agent.agent_loop" in sys.modules:
+            importlib.reload(sys.modules["agent.agent_loop"])
+        from agent.agent_loop import run_investigation as run_inv
+
+        tx = {
+            "transaction_id": "TX_FALLBACK_TEST",
+            "customer_id": "CUST_FALLBACK",
+            "merchant_id": "MERCH_002",
+            "amount": 4500.00,
+            "velocity_5m": 3,
+            "velocity_60m": 7,
+            "geo_distance_km": 800.0,
+            "time_since_last_tx_sec": 90.0,
+            "amount_deviation": 3.2
+        }
+        result = run_inv(tx)
+
+        assert result is not None
+        assert "report" in result
+        assert "recommendation" in result["report"]
+        assert result["provider"] in (
+            "deterministic_investigator",
+            "deterministic_fallback",
+            "mock_llm",
+            "degraded_fallback"
+        )
+    finally:
+        if env_backup is not None:
+            os.environ["GROQ_API_KEY"] = env_backup
+
+
+# ---------------------------------------------------------------------------
+# Invalid Inputs — Boundary and Missing Field Cases
+# ---------------------------------------------------------------------------
+
+def test_investigation_missing_customer_id():
+    """Invalid input: missing customer_id should not crash the agent — ID defaults gracefully."""
+    tx = {
+        "transaction_id": "TX_NO_CUST",
+        # customer_id intentionally omitted
+        "amount": 100.0,
+        "velocity_5m": 1,
+        "velocity_60m": 2,
+        "geo_distance_km": 10.0,
+        "time_since_last_tx_sec": 300.0,
+        "amount_deviation": 0.5
+    }
+    # Must not raise
+    result = run_investigation(tx)
+    assert "report" in result
+    assert "recommendation" in result["report"]
+
+
+def test_investigation_negative_amount():
+    """Invalid input: negative amount — agent must handle without crashing."""
+    tx = {
+        "transaction_id": "TX_NEG_AMOUNT",
+        "customer_id": "CUST_NEG",
+        "amount": -50.00,   # invalid negative amount
+        "velocity_5m": 0,
+        "velocity_60m": 1,
+        "geo_distance_km": 0.5,
+        "time_since_last_tx_sec": 3600.0,
+        "amount_deviation": 0.1
+    }
+    result = run_investigation(tx)
+    assert "report" in result
+
+
+def test_investigation_empty_transaction_dict():
+    """Extreme edge case: completely empty transaction dict must not raise an unhandled exception."""
+    result = run_investigation({})
+    assert result is not None
+    assert "report" in result
+
+
+def test_check_known_patterns_negative_amount():
+    """Invalid input: negative amount sent to heuristic rule checker."""
+    result = check_known_patterns({"amount": -100.0, "velocity_5m": 0, "velocity_60m": 0,
+                                   "geo_distance_km": 0.0, "time_since_last_tx_sec": 600.0,
+                                   "amount_deviation": 0.0})
+    assert "triggered_count" in result
+    assert result["triggered_count"] >= 0  # must not crash
+
+
+def test_check_known_patterns_zero_amount():
+    """Invalid input: zero amount should not crash the heuristic checker."""
+    result = check_known_patterns({"amount": 0.0, "velocity_5m": 0, "velocity_60m": 0,
+                                   "geo_distance_km": 0.0, "time_since_last_tx_sec": 600.0,
+                                   "amount_deviation": 0.0})
+    assert "triggered_count" in result
+
+
+def test_check_known_patterns_empty_dict():
+    """Extreme edge case: completely empty dict to check_known_patterns must not crash."""
+    result = check_known_patterns({})
+    assert "triggered_count" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge Case: Pseudo-XML Tool Call Interception
+# ---------------------------------------------------------------------------
+
+def test_inline_tool_call_json_pattern_intercepted(monkeypatch):
+    """Edge case: agent_loop must intercept <tool_call>{...}</tool_call> JSON body pattern."""
+    import json
+    import re
+
+    # Simulate the extraction logic from agent_loop.py Pattern A
+    raw_content = '<tool_call>{"name": "get_customer_history", "arguments": {"customer_id": "CUST_99"}}</tool_call>'
+
+    tc_match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", raw_content, re.DOTALL)
+    assert tc_match is not None, "Regex should match <tool_call> JSON pattern"
+
+    tc_body = json.loads(tc_match.group(1))
+    fn_name = tc_body.get("name") or tc_body.get("tool")
+    fn_args = tc_body.get("arguments") or tc_body.get("parameters") or {}
+
+    assert fn_name == "get_customer_history"
+    assert fn_args["customer_id"] == "CUST_99"
+
+
+def test_inline_tool_call_alternative_key_intercepted():
+    """Edge case: <tool_call>{"tool": ..., "parameters": ...}</tool_call> variant (Pattern B)."""
+    import json
+    import re
+
+    raw_content = '<tool_call>{"tool": "check_known_patterns", "parameters": {"amount": 9500}}</tool_call>'
+
+    tc_match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", raw_content, re.DOTALL)
+    assert tc_match is not None
+
+    tc_body = json.loads(tc_match.group(1))
+    fn_name = tc_body.get("name") or tc_body.get("tool")
+    fn_args = tc_body.get("arguments") or tc_body.get("parameters") or {}
+
+    assert fn_name == "check_known_patterns"
+    assert fn_args["amount"] == 9500

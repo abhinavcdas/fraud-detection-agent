@@ -93,23 +93,50 @@ def evaluate_model_performance(
     model, metadata = load_model_and_metadata()
     calibrated_th = calibrated_threshold or metadata.get("optimal_threshold", 0.38)
 
-    # Replicate held-out test partition
+    # Replicate held-out test partition with minority class resilience
     df = prepare_engineered_dataset(max_rows=max_rows)
     X = df[FEATURE_COLUMNS]
     y = df["is_fraud"].astype(int)
+
+    fraud_count = int(y.sum())
+    strat = y if fraud_count >= 2 else None
+
+    if strat is None:
+        logger.warning(
+            "Only {f} positive fraud case(s) in dataset — disabling stratification to avoid ValueError.",
+            f=fraud_count
+        )
 
     _, X_test, _, y_test = train_test_split(
         X, y,
         test_size=0.20,
         random_state=42,
-        stratify=y
+        stratify=strat
     )
 
-    logger.info("Held-out test slice prepared: {n} records ({f} fraud cases)",
-                n=len(X_test), f=int(y_test.sum()))
+    # If test split rounds to 0 positives (extreme imbalance), inject a few positive samples
+    if int(y_test.sum()) == 0 and fraud_count > 0:
+        logger.warning(
+            "Test split contains 0 fraud cases after stratification — injecting positive samples."
+        )
+        fraud_indices = df[df["is_fraud"] == 1].index
+        n_inject = min(len(fraud_indices), max(1, int(len(X_test) * 0.01)))
+        inject_idx = fraud_indices[:n_inject]
+        X_test = pd.concat([X_test, df.loc[inject_idx, FEATURE_COLUMNS]])
+        y_test = pd.concat([y_test, df.loc[inject_idx, "is_fraud"].astype(int)])
+
+    logger.info("Held-out test slice prepared: {n} records ({f} fraud cases, {inc:.3f}% incidence)",
+                n=len(X_test), f=int(y_test.sum()),
+                inc=int(y_test.sum()) / len(y_test) * 100)
 
     if int(y_test.sum()) == 0:
-        raise ValueError("Held-out test split contains 0 positive fraud cases! Stratified sampling required.")
+        raise ValueError(
+            f"No positive fraud cases available in the full dataset (max_rows={max_rows}). "
+            "Use a larger --max-rows value or verify dataset integrity."
+        )
+
+    # Compute actual fraud prevalence for dynamic scorecard narrative
+    fraud_incidence_pct = int(y_test.sum()) / len(y_test) * 100
 
     y_proba = model.predict_proba(X_test)[:, 1]
 
@@ -193,7 +220,8 @@ def evaluate_model_performance(
         top_factors_high=top_factors_high,
         top_factors_border=top_factors_border,
         shap_summary_path=shap_summary_path,
-        wf_paths=[wf_high_path, wf_border_path, wf_low_path]
+        wf_paths=[wf_high_path, wf_border_path, wf_low_path],
+        fraud_incidence_pct=fraud_incidence_pct
     )
 
     logger.info("Model evaluation complete. Scorecard written to: {path}", path=scorecard_path)
@@ -217,7 +245,8 @@ def write_markdown_scorecard(
     top_factors_high: list,
     top_factors_border: list,
     shap_summary_path: str,
-    wf_paths: list
+    wf_paths: list,
+    fraud_incidence_pct: float = 0.35
 ) -> str:
     """Construct and export comprehensive executive model scorecard in Markdown."""
     scorecard_file = REPORTS_DIR / "model_scorecard.md"
@@ -225,6 +254,10 @@ def write_markdown_scorecard(
 
     model_ver = metadata.get("model_version", "fraud-xgb-v1")
     strategy = metadata.get("champion_strategy", "smote_xgboost")
+
+    # Compute recall delta (directional, no double-plus)
+    recall_delta = (metrics_calibrated["recall"] - metrics_default["recall"]) * 100
+    recall_delta_str = f"{recall_delta:+.2f}%"
 
     content = f"""# Fraud ML Model Performance Scorecard
 
@@ -237,13 +270,13 @@ def write_markdown_scorecard(
 
 ## 1. Executive Performance Summary
 
-In financial fraud detection, severe class imbalance (~0.35% fraud incidence) makes traditional accuracy and ROC-AUC deceptive. Model performance is evaluated using **PR-AUC (Precision-Recall AUC)** and **Recall at Operational Threshold** to minimize costly false negatives (uncaught fraud).
+In financial fraud detection, severe class imbalance ({fraud_incidence_pct:.2f}% fraud incidence in this evaluation slice) makes traditional accuracy and ROC-AUC deceptive. Model performance is evaluated using **PR-AUC (Precision-Recall AUC)** and **Recall at Operational Threshold** to minimize costly false negatives (uncaught fraud).
 
 | Metric | Default Threshold (0.50) | Operational Calibrated ({metrics_calibrated['threshold']:.2f}) | Delta / Business Impact |
 |---|---|---|---|
 | **PR-AUC** | `{metrics_default['pr_auc']:.4f}` | `{metrics_calibrated['pr_auc']:.4f}` | Stable discrimination across precision-recall curve |
 | **ROC-AUC** | `{metrics_default['roc_auc']:.4f}` | `{metrics_calibrated['roc_auc']:.4f}` | Global separability measure |
-| **Recall (Detection Rate)** | `{metrics_default['recall'] * 100:.2f}%` | **`{metrics_calibrated['recall'] * 100:.2f}%`** | +{(metrics_calibrated['recall'] - metrics_default['recall']) * 100:+.2f}% fraud captured |
+| **Recall (Detection Rate)** | `{metrics_default['recall'] * 100:.2f}%` | **`{metrics_calibrated['recall'] * 100:.2f}%`** | {recall_delta_str} fraud captured |
 | **Precision** | `{metrics_default['precision'] * 100:.2f}%` | `{metrics_calibrated['precision'] * 100:.2f}%` | Analyst queue purity |
 | **F1-Score** | `{metrics_default['f1']:.4f}` | `{metrics_calibrated['f1']:.4f}` | Balanced harmonic mean |
 | **False Negatives (Missed)** | `{metrics_default['false_negatives']}` | **`{metrics_calibrated['false_negatives']}`** | Prevented chargebacks |

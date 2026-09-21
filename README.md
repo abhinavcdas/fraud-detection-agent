@@ -2,9 +2,9 @@
 
 [![CI Pipeline](https://github.com/abhinavcdas/fraud-detection-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinavcdas/fraud-detection-agent/actions)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
-[![PR-AUC: 0.8552](https://img.shields.io/badge/PR--AUC-0.8552-brightgreen.svg)](reports/model_scorecard.md)
+[![PR-AUC: 0.9077](https://img.shields.io/badge/PR--AUC-0.9077-brightgreen.svg)](reports/model_scorecard.md)
 [![Hot-Path p95: 1.39ms](https://img.shields.io/badge/p95_Latency-1.39ms-success.svg)](reports/latency_benchmark.md)
-[![Tests: 70 Passed](https://img.shields.io/badge/Tests-70_Passed-success.svg)](tests/)
+[![Tests: 108 Passed](https://img.shields.io/badge/Tests-108_Passed-success.svg)](tests/)
 
 A production-grade, **Dual-Path Streaming Fraud Prevention & Regulatory Triage Platform** designed for real-time payment networks and forensic risk investigation. 
 

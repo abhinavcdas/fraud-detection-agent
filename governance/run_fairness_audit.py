@@ -127,6 +127,9 @@ def run_fairness_audit(
         stratify=y
     )
 
+    if int(y_test.sum()) == 0:
+        raise ValueError("Held-out test split contains 0 positive fraud cases! Stratified sampling required.")
+
     test_indices = X_test.index
     eval_df = df.loc[test_indices].copy()
     y_proba = model.predict_proba(X_test)[:, 1]

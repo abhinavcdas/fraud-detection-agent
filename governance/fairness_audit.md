@@ -1,7 +1,7 @@
 # Model Fairness & Disparate Impact Audit Report
 
-**Generated:** 2026-09-21 07:23:47 UTC  
-**Evaluated Test Population:** 200 transactions  
+**Generated:** 2026-09-21 07:57:52 UTC  
+**Evaluated Test Population:** 5,000 transactions  
 **Model Operating Threshold:** `0.38`  
 **Regulatory Framework:** OCC Bulletin 2011-12 / Federal Reserve SR 11-7 (Model Risk Management)  
 
@@ -43,25 +43,25 @@ $$\text{FPR} = \frac{\text{False Positives}}{\text{Total Legitimate Customers in
 
 | Amount Band | Evaluated (N) | Verified Fraud | Actual Fraud Rate | Flagged Count | Flag Rate (%) | Disparate Impact Ratio (DIR) | Four-Fifths Compliant? | False Positive Rate | FPR Disparity |
 |---|---|---|---|---|---|---|---|---|---|
-| **Micro (< $20)** | 111 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
-| **Standard ($20 - $200)** | 74 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
-| **Large ($200 - $1,000)** | 15 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
-| **High-Value (> $1,000)** | 0 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
+| **Micro (< $20)** | 2,421 | 61 | 2.52% | 53 | 2.19% | `2.39` | **FLAGGED (Risk Concentration)** | 0.00% | `1.00` |
+| **Standard ($20 - $200)** | 2,076 | 28 | 1.35% | 19 | 0.92% | `1.00` | PASSED | 0.00% | `1.00` |
+| **Large ($200 - $1,000)** | 450 | 9 | 2.00% | 3 | 0.67% | `0.73` | **FLAGGED (Risk Concentration)** | 0.00% | `1.00` |
+| **High-Value (> $1,000)** | 53 | 0 | 0.00% | 0 | 0.00% | `0.00` | **FLAGGED (Risk Concentration)** | 0.00% | `1.00` |
 
 ### B. Merchant Category Tiers (Baseline: Essential Grocery/Pharmacy)
 
 | Merchant Tier | Evaluated (N) | Verified Fraud | Actual Fraud Rate | Flagged Count | Flag Rate (%) | Disparate Impact Ratio (DIR) | Four-Fifths Compliant? | False Positive Rate | FPR Disparity |
 |---|---|---|---|---|---|---|---|---|---|
-| **Essential (Grocery/Pharmacy)** | 2 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
-| **Discretionary (Retail/Dining/Travel)** | 197 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
-| **High-Risk (Digital/Crypto/Electronics)** | 1 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
+| **Essential (Grocery/Pharmacy)** | 39 | 1 | 2.56% | 1 | 2.56% | `1.00` | PASSED | 0.00% | `1.00` |
+| **Discretionary (Retail/Dining/Travel)** | 4,923 | 96 | 1.95% | 73 | 1.48% | `0.58` | **FLAGGED (Category Risk)** | 0.00% | `1.00` |
+| **High-Risk (Digital/Crypto/Electronics)** | 38 | 1 | 2.63% | 1 | 2.63% | `1.03` | PASSED | 0.00% | `1.00` |
 
 ### C. Temporal Windows (Baseline: Daytime / Business Hours)
 
 | Time Window | Evaluated (N) | Verified Fraud | Actual Fraud Rate | Flagged Count | Flag Rate (%) | Disparate Impact Ratio (DIR) | Four-Fifths Compliant? | False Positive Rate | FPR Disparity |
 |---|---|---|---|---|---|---|---|---|---|
-| **Daytime / Business Hours (08:00 - 20:00)** | 0 | 0 | 0.00% | 0 | 0.00% | `1.00` | PASSED | 0.00% | `1.00` |
-| **Off-Hours / Overnight (20:00 - 08:00)** | 200 | 0 | 0.00% | 0 | 0.00% | `0.00` | **FLAGGED (Off-Hours Spike)** | 0.00% | `0.00` |
+| **Daytime / Business Hours (08:00 - 20:00)** | 3,253 | 53 | 1.63% | 37 | 1.14% | `1.00` | PASSED | 0.00% | `1.00` |
+| **Off-Hours / Overnight (20:00 - 08:00)** | 1,747 | 45 | 2.58% | 38 | 2.18% | `1.91` | **FLAGGED (Off-Hours Spike)** | 0.00% | `1.00` |
 
 ---
 

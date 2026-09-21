@@ -108,6 +108,9 @@ def evaluate_model_performance(
     logger.info("Held-out test slice prepared: {n} records ({f} fraud cases)",
                 n=len(X_test), f=int(y_test.sum()))
 
+    if int(y_test.sum()) == 0:
+        raise ValueError("Held-out test split contains 0 positive fraud cases! Stratified sampling required.")
+
     y_proba = model.predict_proba(X_test)[:, 1]
 
     # Evaluate at default 0.50 vs calibrated threshold

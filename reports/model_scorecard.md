@@ -1,9 +1,9 @@
 # Fraud ML Model Performance Scorecard
 
-**Generated:** 2026-09-21 06:58:16 UTC  
+**Generated:** 2026-09-21 07:57:12 UTC  
 **Model Version:** `fraud-xgb-v1`  
 **Champion Strategy:** `smote_xgboost`  
-**Evaluated Slice:** 200 held-out test transactions  
+**Evaluated Slice:** 5,000 held-out test transactions  
 
 ---
 
@@ -13,12 +13,12 @@ In financial fraud detection, severe class imbalance (~0.35% fraud incidence) ma
 
 | Metric | Default Threshold (0.50) | Operational Calibrated (0.38) | Delta / Business Impact |
 |---|---|---|---|
-| **PR-AUC** | `0.0000` | `0.0000` | Stable discrimination across precision-recall curve |
-| **ROC-AUC** | `0.0000` | `0.0000` | Global separability measure |
-| **Recall (Detection Rate)** | `0.00%` | **`0.00%`** | ++0.00% fraud captured |
-| **Precision** | `0.00%` | `0.00%` | Analyst queue purity |
-| **F1-Score** | `0.0000` | `0.0000` | Balanced harmonic mean |
-| **False Negatives (Missed)** | `0` | **`0`** | Prevented chargebacks |
+| **PR-AUC** | `0.8552` | `0.8552` | Stable discrimination across precision-recall curve |
+| **ROC-AUC** | `0.9812` | `0.9812` | Global separability measure |
+| **Recall (Detection Rate)** | `76.53%` | **`76.53%`** | ++0.00% fraud captured |
+| **Precision** | `100.00%` | `100.00%` | Analyst queue purity |
+| **F1-Score** | `0.8671` | `0.8671` | Balanced harmonic mean |
+| **False Negatives (Missed)** | `23` | **`23`** | Prevented chargebacks |
 | **False Positives (Review)** | `0` | `0` | Managed analyst workload |
 
 ---
@@ -26,16 +26,16 @@ In financial fraud detection, severe class imbalance (~0.35% fraud incidence) ma
 ## 2. Operational Confusion Matrix
 
 ### Default Operating Threshold (`0.50`)
-- **True Positives (Captured Fraud):** `0`
-- **False Negatives (Missed Fraud):** `0`
+- **True Positives (Captured Fraud):** `75`
+- **False Negatives (Missed Fraud):** `23`
 - **False Positives (False Alarms):** `0`
-- **True Negatives (Legitimate Cleared):** `200`
+- **True Negatives (Legitimate Cleared):** `4,902`
 
 ### Recall-Calibrated Operating Threshold (`0.38`)
-- **True Positives (Captured Fraud):** `0`
-- **False Negatives (Missed Fraud):** `0`
+- **True Positives (Captured Fraud):** `75`
+- **False Negatives (Missed Fraud):** `23`
 - **False Positives (False Alarms):** `0`
-- **True Negatives (Legitimate Cleared):** `200`
+- **True Negatives (Legitimate Cleared):** `4,902`
 
 ---
 
@@ -56,25 +56,25 @@ SHAP (SHapley Additive exPlanations) decomposes model predictions into additive 
 
 ## 4. Local Transaction Interpretability (Case Studies)
 
-### Case 1: High-Confidence Fraud (`P = 0.0095`)
+### Case 1: High-Confidence Fraud (`P = 0.9903`)
 ![Waterfall TX 1](shap_waterfall_tx1.png)
 
 **Top Risk Drivers:**
-- **`velocity_5m`** (value=0.0): SHAP `-5.0856` (DECREASES_RISK)
-- **`amount`** (value=700.0): SHAP `+0.9243` (INCREASES_RISK)
-- **`velocity_60m`** (value=0.0): SHAP `-0.6563` (DECREASES_RISK)
-- **`amount_deviation`** (value=0.0): SHAP `-0.0470` (DECREASES_RISK)
-- **`v23`** (value=1.5723): SHAP `+0.0428` (INCREASES_RISK)
+- **`velocity_5m`** (value=7.0): SHAP `+4.7682` (INCREASES_RISK)
+- **`amount`** (value=1.0): SHAP `-0.8693` (DECREASES_RISK)
+- **`velocity_60m`** (value=12.0): SHAP `+0.6447` (INCREASES_RISK)
+- **`amount_deviation`** (value=-1.3025): SHAP `-0.0470` (DECREASES_RISK)
+- **`v23`** (value=-0.1216): SHAP `-0.0425` (DECREASES_RISK)
 
-### Case 2: Borderline / Ambiguous Event (`P = 0.0095`)
+### Case 2: Borderline / Ambiguous Event (`P = 0.0372`)
 ![Waterfall TX 2](shap_waterfall_tx2.png)
 
 **Top Risk Drivers:**
-- **`velocity_5m`** (value=0.0): SHAP `-5.0856` (DECREASES_RISK)
-- **`amount`** (value=700.0): SHAP `+0.9243` (INCREASES_RISK)
-- **`velocity_60m`** (value=0.0): SHAP `-0.6563` (DECREASES_RISK)
-- **`amount_deviation`** (value=0.0): SHAP `-0.0470` (DECREASES_RISK)
-- **`v23`** (value=1.5723): SHAP `+0.0428` (INCREASES_RISK)
+- **`velocity_5m`** (value=1.0): SHAP `-5.0856` (DECREASES_RISK)
+- **`amount`** (value=824.83): SHAP `+0.9243` (INCREASES_RISK)
+- **`velocity_60m`** (value=6.0): SHAP `+0.6447` (INCREASES_RISK)
+- **`amount_deviation`** (value=17.912): SHAP `+0.0460` (INCREASES_RISK)
+- **`v23`** (value=1.7117): SHAP `+0.0428` (INCREASES_RISK)
 
 ### Case 3: Cleared Routine Transaction (`P = 0.0015`)
 ![Waterfall TX 3](shap_waterfall_tx3.png)

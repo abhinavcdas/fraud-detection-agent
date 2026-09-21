@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+
+# Data & Databases
+data/raw/*.csv
+data/processed/*.csv
+data/processed/*.parquet
+data/processed/*.db
+*.db
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# MLflow & Model Artifacts
+mlruns/
+mlartifacts/
+model/registry/*
+!model/registry/.gitkeep
+!model/registry/fraud_xgb_v1.onnx
+!model/registry/fraud_xgb_v1.joblib
+!model/registry/model_metadata.json
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.deepeval/
+
+# Logs & Monitoring
+*.log
+logs/*
+!logs/.gitkeep
+drift_reports/
+reports/*.html
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

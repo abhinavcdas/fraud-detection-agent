@@ -7,6 +7,7 @@ and enforces strict guardrail faithfulness validation on the final report.
 
 import os
 import sys
+import re
 import json
 import time
 from typing import Dict, Any, List, Optional
@@ -213,7 +214,10 @@ def run_investigation(transaction: Dict[str, Any], max_turns: int = 4) -> Dict[s
 
             msg = response.choices[0].message
 
-            # Process tool calls
+            # Process tool calls (native API tool_calls or inline pseudo-tool calling syntax)
+            raw_content = msg.content or ""
+            inline_called = False
+
             if msg.tool_calls:
                 messages.append(msg)
                 for tc in msg.tool_calls:
@@ -229,9 +233,31 @@ def run_investigation(transaction: Dict[str, Any], max_turns: int = 4) -> Dict[s
                         "name": fn_name,
                         "content": json.dumps(out)
                     })
-            else:
+            elif "<tool_call>" in raw_content or "<function=" in raw_content:
+                # Handle models emitting inline pseudo-tool calling syntax
+                match = re.search(r"<function=([a-zA-Z0-9_]+)>(.*?)(?:</function>|</tool_call>|$)", raw_content, re.DOTALL)
+                if match:
+                    fn_name = match.group(1).strip()
+                    args_str = match.group(2).strip()
+                    try:
+                        fn_args = json.loads(args_str) if args_str else {}
+                    except json.JSONDecodeError:
+                        fn_args = {}
+                    out = execute_tool_call(fn_name, fn_args)
+                    collected_tool_outputs.append(out)
+                    tx_logger.debug("Executed inline agent tool: {fn} | args={args}", fn=fn_name, args=fn_args)
+                    messages.append({"role": "assistant", "content": raw_content})
+                    messages.append({
+                        "role": "user",
+                        "content": f"Tool '{fn_name}' execution result: {json.dumps(out)}. Synthesize final JSON report now."
+                    })
+                    inline_called = True
+
+            if inline_called:
+                continue
+
+            if not msg.tool_calls:
                 # Terminal answer reached
-                raw_content = msg.content or "{}"
                 try:
                     # Strip any markdown code fences if model enclosed JSON in ```json ... ```
                     cleaned_content = raw_content.strip()
@@ -239,13 +265,23 @@ def run_investigation(transaction: Dict[str, Any], max_turns: int = 4) -> Dict[s
                         cleaned_content = cleaned_content.split("\n", 1)[1]
                         if cleaned_content.endswith("```"):
                             cleaned_content = cleaned_content.rsplit("\n", 1)[0]
+                    # Also strip any stray thought or tool tags before parsing
+                    cleaned_content = re.sub(r"<thought>.*?</thought>", "", cleaned_content, flags=re.DOTALL).strip()
                     report = json.loads(cleaned_content)
                 except json.JSONDecodeError:
+                    # Sanitize any raw XML or leaked tool tags to ensure clean audit dossiers
+                    sanitized_summary = re.sub(r"<[^>]+>", " ", raw_content).strip()
+                    sanitized_summary = re.sub(r"\s+", " ", sanitized_summary)
+                    if not sanitized_summary or len(sanitized_summary) < 10:
+                        sanitized_summary = "Automated risk investigation recommends ESCALATE for forensic manual review."
+                    else:
+                        sanitized_summary = sanitized_summary[:300]
+
                     report = {
-                        "risk_level": "UNKNOWN",
+                        "risk_level": "HIGH",
                         "recommendation": "ESCALATE",
-                        "summary": raw_content,
-                        "evidence": ["Unstructured model response; requires human review."],
+                        "summary": sanitized_summary,
+                        "evidence": ["Unstructured model response; sanitized and routed to forensic review."],
                         "cited_facts": []
                     }
 

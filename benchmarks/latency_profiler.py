@@ -75,8 +75,15 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
         async with semaphore:
             t_total_start = time.perf_counter()
 
-            # 1. Feature Store Lookup
+            # 1. Feature Store: Write event and retrieve sliding window features (write-then-read)
             t_feat_start = time.perf_counter()
+            await feature_store.record_event(
+                customer_id=cust_id,
+                timestamp=now_ts,
+                amount=tx["amount"],
+                lat=40.7130,
+                lon=-74.0062
+            )
             feats = await feature_store.get_sliding_window_features(cust_id, now_ts, 40.7130, -74.0062)
             t_feat_end = time.perf_counter()
             feat_ms = (t_feat_end - t_feat_start) * 1000.0
@@ -89,18 +96,26 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
             rule_ms = (t_rule_end - t_rule_start) * 1000.0
             latencies_rules.append(rule_ms)
 
-            # 3. ONNX Inference
+            # Construct full-width 34-dimensional feature vector matching champion model
+            model_features = {
+                **feats,
+                "amount": tx["amount"],
+                "country": tx["country"],
+                **{f"v{i}": 0.05 * (tx_idx % 10) for i in range(1, 29)}
+            }
+
+            # 3. ONNX Inference (Full Vector)
             t_onnx_start = time.perf_counter()
-            onnx_prob = onnx_scorer.predict_proba({"amount": tx["amount"], "velocity_5m": feats["velocity_5m"]})
+            onnx_prob = onnx_scorer.predict_proba(model_features)
             t_onnx_end = time.perf_counter()
             onnx_ms = (t_onnx_end - t_onnx_start) * 1000.0
             latencies_onnx.append(onnx_ms)
 
             latencies_onnx_hotpath.append(rule_ms + feat_ms + onnx_ms)
 
-            # 4. Standard XGBoost Inference (for comparison)
+            # 4. Standard XGBoost Inference (Full Vector for comparison)
             t_xgb_start = time.perf_counter()
-            xgb_prob = xgb_scorer.predict_proba({"amount": tx["amount"], "velocity_5m": feats["velocity_5m"]})
+            xgb_prob = xgb_scorer.predict_proba(model_features)
             t_xgb_end = time.perf_counter()
             latencies_xgb.append((t_xgb_end - t_xgb_start) * 1000.0)
 

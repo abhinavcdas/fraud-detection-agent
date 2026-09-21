@@ -2,8 +2,8 @@
 
 [![CI Pipeline](https://github.com/abhinavcdas/fraud-detection-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinavcdas/fraud-detection-agent/actions)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
-[![PR-AUC: 0.9868](https://img.shields.io/badge/PR--AUC-0.9868-brightgreen.svg)](reports/model_scorecard.md)
-[![Hot-Path p95: 1.38ms](https://img.shields.io/badge/p95_Latency-1.38ms-success.svg)](reports/latency_benchmark.md)
+[![PR-AUC: 0.8552](https://img.shields.io/badge/PR--AUC-0.8552-brightgreen.svg)](reports/model_scorecard.md)
+[![Hot-Path p95: 1.39ms](https://img.shields.io/badge/p95_Latency-1.39ms-success.svg)](reports/latency_benchmark.md)
 [![Tests: 70 Passed](https://img.shields.io/badge/Tests-70_Passed-success.svg)](tests/)
 
 A production-grade, **Dual-Path Streaming Fraud Prevention & Regulatory Triage Platform** designed for real-time payment networks and forensic risk investigation. 
@@ -16,24 +16,24 @@ The platform separates the **Inline Hot Path** (strict $< 50\text{ ms}$ authoriz
 
 ```mermaid
 flowchart TD
-    subgraph HotPath["HOT PATH (Strict Inline Inference: < 50ms SLA)"]
+    subgraph HotPath["HOT PATH (Inline Authorization: Sub-50ms SLA)"]
         A["Incoming Transaction Event"] --> B["1. Kafka / Redpanda Ingestion Topic"]
-        B --> C["2. Low-Latency Feature Store (Redis ZSETs)<br/>- 10s, 60s, 5m Velocity<br/>- Haversine Impossible Travel Speed"]
-        C --> D["3. Deterministic Pre-ML Hard Rules<br/>- OFAC Sanctions / Embargo List<br/>- $10k Single-Transaction Ceiling<br/>- Velocity Killswitch (>8 tx/min)"]
-        D -->|BLOCK| D1["Instant Decline (0.04 ms)<br/>Bypass ML Scoring"]
-        D -->|PASS / STEP_UP| E["4. Ultra-Fast ML Serving (ONNX Runtime)<br/>- Champion Model: fraud-xgb-v1 (PR-AUC 0.9868)<br/>- Sub-1ms C++ Fused Kernels"]
-        E --> F{"Score >= 0.38?"}
-        F -->|No| G["APPROVE / Settle Payment"]
+        B --> C["2. Feature Store (Redis Sliding Windows)<br>- 10s, 60s, 5m Velocity<br>- Impossible Travel Velocity"]
+        C --> D["3. Deterministic Pre-ML Rules<br>- OFAC Sanctions / Embargo List<br>- Hard Dollar Transaction Ceiling<br>- Velocity Burst Killswitch"]
+        D -->|BLOCK| D1["Instant Decline (0.04 ms)<br>Bypass ML Scoring"]
+        D -->|PASS / STEP_UP| E["4. Ultra-Fast ML Serving (ONNX Runtime)<br>- Champion Model: fraud-xgb-v1<br>- Sub-1ms C++ Fused Kernels"]
+        E --> F{"Risk Score &ge; 0.38?"}
+        F -->|No| G["APPROVE / Clear Transaction"]
         F -->|Yes| H["STEP-UP 2FA / DECLINE"]
     end
 
     subgraph ColdPath["COLD PATH (Asynchronous Forensic & Regulatory Triage)"]
-        H --> I["5. Asynchronous Alert Queue (Kafka fraud-alerts)"]
-        I --> J["6. Entity Resolution Graph (NetworkX)<br/>- Multi-Partite Customer ↔ Device ↔ IP ↔ Card<br/>- Community Detection for Money Mule Rings"]
-        I --> K["7. Groq LLM Forensic Investigator (Llama-3.3-70B)<br/>- RAG 90-Day Spending History<br/>- SHAP Feature Attribution Forces<br/>- Faithfulness Numeric Verification Guardrails"]
-        J --> L["8. Automated FinCEN Form 111 SAR Generator<br/>- Part I: Subject Information<br/>- Part II: Suspicious Activity Details<br/>- Part III: Scoring Engine Metadata<br/>- Part IV: Regulatory Narrative"]
+        H --> I["5. Asynchronous Alert Queue (fraud-alerts)"]
+        I --> J["6. Entity Resolution Graph (NetworkX)<br>- Multi-Entity Graph: Customer, Device, IP, Card<br>- Money Mule Ring Detection"]
+        I --> K["7. Groq LLM Forensic Investigator (Llama-3.3-70B)<br>- RAG 90-Day Account History<br>- Local SHAP Force Attribution<br>- Strict Guardrail Verification"]
+        J --> L["8. Automated FinCEN Form 111 SAR Generator<br>- Part I: Subject Information<br>- Part II: Suspicious Activity Details<br>- Part III: Scoring Engine Metadata<br>- Part IV: Regulatory Narrative"]
         K --> L
-        L --> M["9. Operations Console & Triage (Streamlit)<br/>- Interactive Mule Ring Ego-Graph<br/>- Regulatory Filing One-Click Export<br/>- Model Risk (SR 11-7) & Evidently Drift"]
+        L --> M["9. Operations Console & Triage (Streamlit)<br>- Live Flagged Queue & SAR Export<br>- Interactive Mule Ring Visualizer<br>- Model Risk & Evidently Drift"]
     end
 ```
 

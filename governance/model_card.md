@@ -15,12 +15,12 @@
 
 ```mermaid
 flowchart LR
-    A[Streaming Transaction] --> B[Feature Engineering]
-    B --> C[fraud-xgb-v1<br/>Inference <= 15ms]
-    C -->|Score < 0.38| D[AUTO-APPROVE]
-    C -->|Score >= 0.38| E[Groq LLM Agent<br/>Investigation]
-    E --> F[Faithfulness Guardrails]
-    F --> G[(Immutable Audit Log)]
+    A["Streaming Transaction"] --> B["Feature Engineering"]
+    B --> C["fraud-xgb-v1<br>Sub-15ms Inference"]
+    C -->|"Score &lt; 0.38"| D["AUTO-APPROVE"]
+    C -->|"Score &ge; 0.38"| E["Groq LLM Agent<br>Investigation"]
+    E --> F["Faithfulness Guardrails"]
+    F --> G[("Immutable Audit Log")]
 ```
 
 ---

@@ -132,7 +132,37 @@ fraud-detection-agent/
 
 ## 🛠️ Quick Start & Execution
 
-### 1. Environment Setup
+### Option A: Complete Docker Compose Deployment (Recommended)
+
+Spin up the entire end-to-end distributed infrastructure (Redpanda streaming broker, Redpanda Console UI, PostgreSQL 16 database, Redis feature store, MLflow tracking server, FastAPI serving engine, and Streamlit operations console) with a single command:
+
+```bash
+docker compose up -d --build
+```
+
+#### Service Port & Endpoint Mapping
+
+| Service | Container | URL / Port | Purpose |
+|---|---|---|---|
+| **FastAPI Serving Engine** | `fraud-api` | [http://localhost:8000](http://localhost:8000) (`/docs` for Swagger UI) | Dual-path inference, rule checks, graph APIs |
+| **Streamlit Operations Console** | `fraud-dashboard` | [http://localhost:8501](http://localhost:8501) | 8-tab operational & regulatory investigation console |
+| **Redpanda Kafka Console** | `redpanda-console` | [http://localhost:8080](http://localhost:8080) | Live event streaming visualizer & consumer group monitor |
+| **MLflow Tracking Server** | `mlflow-server` | [http://localhost:5000](http://localhost:5000) | Model artifact registry and experiment telemetry |
+| **Redis Feature Store** | `redis-feature-store` | `localhost:6379` | Sliding-window transaction velocity sorted sets |
+| **PostgreSQL Database** | `postgres-fraud` | `localhost:5432` (`fraud_detection`) | Persistent transaction records and audit store |
+| **Redpanda Kafka Broker** | `redpanda` | `localhost:9092` | Distributed pub-sub transaction bus |
+
+To inspect running containers or tear down the stack:
+```bash
+docker compose ps
+docker compose down
+```
+
+---
+
+### Option B: Local Python Virtual Environment
+
+#### 1. Environment Setup
 
 ```bash
 python -m venv .venv
@@ -140,14 +170,14 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2. Run Latency Benchmark Profiler
+#### 2. Run Latency Benchmark Profiler
 
 ```bash
 python benchmarks/latency_profiler.py
 ```
 Outputs the benchmark scorecard directly to `reports/latency_benchmark.md`.
 
-### 3. Launch FastAPI Serving Engine
+#### 3. Launch FastAPI Serving Engine
 
 ```bash
 uvicorn api.main:app --host 127.0.0.1 --port 8000
@@ -155,7 +185,7 @@ uvicorn api.main:app --host 127.0.0.1 --port 8000
 - Interactive Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
 - Endpoints: `POST /score`, `POST /rules/evaluate`, `GET /graph/mule-ring/{customer_id}`
 
-### 4. Launch Streamlit Operations Console
+#### 4. Launch Streamlit Operations Console
 
 ```bash
 streamlit run dashboard/app.py
@@ -171,7 +201,7 @@ streamlit run dashboard/app.py
   7. **Model Fairness**: Disparate impact and demographic parity audits.
   8. **Drift Monitoring**: Interactive Evidently AI Kolmogorov-Smirnov drift report.
 
-### 5. Run Complete Automated Test Suite
+#### 5. Run Complete Automated Test Suite
 
 ```bash
 pytest -v tests/

@@ -115,7 +115,7 @@ def run_agent_eval(
         got_rec = report.get("recommendation", "UNKNOWN")
         exp_rec = tx.get("expected_recommendation", "UNKNOWN")
         is_concordant = align_recommendations(got_rec, exp_rec)
-        faith_score = float(guardrails.get("faithfulness_score", 1.0))
+        faith_score = float(guardrails.get("faithfulness_score", 0.0))
         latency = float(result.get("latency_ms", 0.0))
 
         latencies.append(latency)

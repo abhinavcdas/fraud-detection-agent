@@ -14,19 +14,29 @@ from typing import Dict, Any, List, Optional
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Compute great-circle distance in kilometers between two geographic coordinates."""
+    if any(v is None for v in (lat1, lon1, lat2, lon2)):
+        return 0.0
     r = 6371.0 # Mean Earth radius in kilometers
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    
-    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
-    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return round(r * c, 3)
+    try:
+        phi1, phi2 = math.radians(float(lat1)), math.radians(float(lat2))
+        dphi = math.radians(float(lat2) - float(lat1))
+        dlambda = math.radians(float(lon2) - float(lon1))
+        
+        a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+        # Clamp 'a' to [0.0, 1.0] to eliminate floating-point precision domain errors
+        a = max(0.0, min(1.0, a))
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+        return round(r * c, 3)
+    except (ValueError, TypeError):
+        return 0.0
 
 def parse_time_seconds(tx: Dict[str, Any]) -> float:
     """Extract or parse continuous time in seconds from transaction event."""
     if "time_step" in tx and tx["time_step"] is not None:
-        return float(tx["time_step"])
+        try:
+            return float(tx["time_step"])
+        except (ValueError, TypeError):
+            pass
     if "timestamp" in tx and tx["timestamp"]:
         try:
             dt = datetime.fromisoformat(str(tx["timestamp"]).replace("Z", "+00:00"))
@@ -101,6 +111,14 @@ def compute_rolling_features(current_tx: Dict[str, Any], history: List[Dict[str,
     final_geo_dist = max(geo_distance, float(current_tx.get("geo_distance_km", 0.0)))
     final_amount_dev = amount_deviation if past_amounts else float(current_tx.get("amount_deviation", 0.0))
 
+    # Calculate travel speed (km/h) for impossible speed detection
+    if time_since_last > 0:
+        travel_speed_kmh = round(final_geo_dist / (time_since_last / 3600.0), 2)
+    elif final_geo_dist > 0:
+        travel_speed_kmh = 999999.0
+    else:
+        travel_speed_kmh = 0.0
+
     features = {
         "transaction_id": current_tx["transaction_id"],
         "customer_id": current_tx["customer_id"],
@@ -112,6 +130,7 @@ def compute_rolling_features(current_tx: Dict[str, Any], history: List[Dict[str,
         "amount_deviation": round(final_amount_dev, 4),
         "time_since_last_tx_sec": round(time_since_last, 2),
         "geo_distance_km": round(final_geo_dist, 2),
+        "travel_speed_kmh": travel_speed_kmh,
         "is_fraud": int(current_tx.get("is_fraud", 0)),
         "merchant_id": current_tx.get("merchant_id", "MERCH_001")
     }
@@ -123,3 +142,4 @@ def compute_rolling_features(current_tx: Dict[str, Any], history: List[Dict[str,
             features[key] = current_tx[key]
 
     return features
+

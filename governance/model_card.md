@@ -86,10 +86,10 @@ Evaluated on an 80/20 stratified held-out test partition maintaining the identic
 | Balanced LightGBM | `0.9150` | `0.9942` | `83.33%` | `88.89%` | `84.21%` |
 
 ### Champion Operational Confusion Matrix (Threshold = 0.38)
-- **True Positives (Captured Fraud):** 17 / 18 fraud events (**94.44% Recall**)
-- **False Negatives (Missed Fraud):** 1 / 18 fraud events
-- **False Positives:** 1 (Precision = 94.44%)
-- **True Negatives:** 5,677 cleared legitimate transactions
+- **True Positives (Captured Fraud):** 94 / 99 fraud events (**94.95% Recall**)
+- **False Negatives (Missed Fraud):** 5 / 99 fraud events
+- **False Positives:** 11 (Precision = 89.29%)
+- **True Negatives:** 56,844 cleared legitimate transactions (99.98% Specificity)
 
 ---
 

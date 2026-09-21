@@ -80,6 +80,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+import concurrent.futures
+
+_DASHBOARD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="dash_async")
+
+def run_dash_async(coro):
+    """Execute async operations safely from Streamlit render threads without loop collisions."""
+    return _DASHBOARD_EXECUTOR.submit(lambda: asyncio.run(coro)).result()
+
+def mask_pan(pan: Any) -> str:
+    """Mask raw credit card numbers to comply with PCI-DSS 3.4."""
+    if not pan:
+        return "N/A"
+    clean = "".join(filter(str.isdigit, str(pan)))
+    if len(clean) >= 10:
+        return f"{clean[:6]}******{clean[-4:]}"
+    return "******"
+
 # Header Section
 st.title("🛡️ Enterprise Fraud Operations & Autonomous Forensic Console")
 st.markdown("Dual-Path Streaming Anti-Fraud Architecture: **Hot-Path (< 2ms ONNX Scoring & Redis Caching)** with **Cold-Path (Mule Ring Graph Analytics & FinCEN SAR Filing)**.")
@@ -88,18 +105,19 @@ st.markdown("Dual-Path Streaming Anti-Fraud Architecture: **Hot-Path (< 2ms ONNX
 @st.cache_resource
 def get_system_resources():
     storage = get_storage_operator(os.getenv("STORAGE_BACKEND", "sqlite"))
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    loop.run_until_complete(storage.initialize())
+    run_dash_async(storage.initialize())
     rules_engine = DeterministicRulesEngine()
     feat_store = RedisFeatureStore()
     return storage, rules_engine, feat_store
 
 storage, rules_engine, feat_store = get_system_resources()
+
+# Cached transaction fetcher
+def get_flagged_records():
+    try:
+        return run_dash_async(storage.get_recent_flagged_transactions(limit=100))
+    except Exception:
+        return []
 
 # Sidebar Configuration & Simulation
 st.sidebar.header("⚙️ System Architecture")
@@ -130,7 +148,6 @@ with st.sidebar.form("simulate_tx_form"):
 
 # Simulator Action
 if submit_sim:
-    import asyncio
     m_id = sim_merch.split(" ")[0]
     tx_payload = {
         "transaction_id": sim_id,
@@ -147,45 +164,65 @@ if submit_sim:
         "time_since_last_tx_sec": 45.0
     }
 
-    # Step 1: Deterministic Rules
-    rule_res = rules_engine.evaluate_rules(tx_payload, {"velocity_60s": tx_payload["velocity_60m"]})
-
-    # Step 2: Scoring
-    scorer = get_scoring_operator("onnx")
-    if rule_res["action"] == "BLOCK":
-        prob = 1.0
-        is_flg = True
-    else:
-        prob = scorer.predict_proba(tx_payload)
-        is_flg = prob >= threshold
-
-    # Step 3: Cold Path Investigation if Flagged
-    agent_dossier = None
-    if is_flg:
-        entity_graph.add_transaction_entities(
-            sim_clean_cust,
-            device_id=sim_clean_device,
-            ip_address=sim_clean_ip
+    # Attempt to route via FastAPI HTTP endpoint /score
+    api_url = os.getenv("API_URL", "http://127.0.0.1:8000/score")
+    scored_via_api = False
+    try:
+        import urllib.request
+        req_bytes = json.dumps(tx_payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{api_url}?async_triage=false",
+            data=req_bytes,
+            headers={"Content-Type": "application/json"}
         )
-        agent_dossier = run_investigation(tx_payload)
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                body = json.loads(resp.read().decode("utf-8"))
+                prob = float(body.get("fraud_score", 0.0))
+                action = body.get("action", "CLEARED")
+                scored_via_api = True
+                st.sidebar.info(f"Routed via FastAPI: {action} (Score: {prob:.3f})")
+    except Exception:
+        scored_via_api = False
 
-    audit_entry = build_audit_record(
-        transaction=tx_payload,
-        fraud_score=prob,
-        is_flagged=is_flg,
-        agent_result=agent_dossier,
-        latency_ms=1.35 if rule_res["action"] != "BLOCK" else 0.05
-    )
-    asyncio.run(storage.save_audit_log(audit_entry))
-    if rule_res["action"] == "BLOCK":
-        st.sidebar.error(f"HARD RULE BLOCK: {rule_res['reason']}")
-    else:
-        st.sidebar.success(f"Scored: {prob:.3f} | Flagged: {is_flg}")
+    if not scored_via_api:
+        # Step 1: Deterministic Rules
+        rule_res = rules_engine.evaluate_rules(tx_payload, {"velocity_60s": tx_payload["velocity_60m"]})
 
+        # Step 2: Scoring
+        scorer = get_scoring_operator("onnx")
+        if rule_res["action"] == "BLOCK":
+            prob = 1.0
+            is_flg = True
+        else:
+            prob = scorer.predict_proba(tx_payload)
+            is_flg = prob >= threshold
+
+        # Step 3: Cold Path Investigation if Flagged
+        agent_dossier = None
+        if is_flg:
+            entity_graph.add_transaction_entities(
+                sim_clean_cust,
+                device_id=sim_clean_device,
+                ip_address=sim_clean_ip
+            )
+            agent_dossier = run_investigation(tx_payload)
+
+        audit_entry = build_audit_record(
+            transaction=tx_payload,
+            fraud_score=prob,
+            is_flagged=is_flg,
+            agent_result=agent_dossier,
+            latency_ms=1.35 if rule_res["action"] != "BLOCK" else 0.05
+        )
+        run_dash_async(storage.save_audit_log(audit_entry))
+        if rule_res["action"] == "BLOCK":
+            st.sidebar.error(f"HARD RULE BLOCK: {rule_res['reason']}")
+        else:
+            st.sidebar.success(f"Scored: {prob:.3f} | Flagged: {is_flg}")
 
 # Top KPI Bar
-import asyncio
-flagged_rows = asyncio.run(storage.get_recent_flagged_transactions(limit=100))
+flagged_rows = get_flagged_records()
 total_flagged = len(flagged_rows)
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -215,9 +252,12 @@ with tab_flagged:
         df_display = []
         for r in flagged_rows:
             rec = dict(r)
+            card_val = rec.get("card_number") or rec.get("card_id")
+            card_display = mask_pan(card_val) if card_val else "TOKENIZED"
             df_display.append({
                 "Transaction ID": rec.get("transaction_id"),
                 "Timestamp": str(rec.get("timestamp"))[:19],
+                "Cardholder PAN": card_display,
                 "Fraud Score": f"{rec.get('fraud_score', 0.0):.3f}",
                 "Agent Decision": rec.get("agent_decision", "REVIEW"),
                 "Guardrail": rec.get("guardrail_status", "SKIPPED"),

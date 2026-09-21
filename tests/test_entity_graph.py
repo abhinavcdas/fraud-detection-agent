@@ -40,3 +40,16 @@ def test_subgraph_data_export():
     assert "edges" in subgraph_data
     assert len(subgraph_data["nodes"]) > 1
     assert len(subgraph_data["edges"]) > 1
+
+def test_prune_old_entities():
+    graph = FraudEntityGraph(max_nodes=100)
+    # Add an entity with an old timestamp (10 days ago)
+    old_ts = 1000.0
+    graph.add_transaction_entities("CUST_OLD", device_id="DEV_OLD_99", timestamp=old_ts)
+    assert graph.graph.has_node("cust:CUST_OLD")
+
+    # Prune entities older than 1 day (86400 seconds)
+    pruned_count = graph.prune_old_entities(max_age_seconds=86400.0)
+    assert pruned_count >= 1
+    assert not graph.graph.has_node("cust:CUST_OLD")
+

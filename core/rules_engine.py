@@ -9,11 +9,18 @@ Executes sub-millisecond sanity and compliance checks before ML scoring:
 """
 
 import os
+from enum import Enum
 from typing import Dict, Any, List, Optional
 from core.interfaces import BaseRulesEngineOperator
 from core.logger import get_logger, bind_tx_context
 
 logger = get_logger("rules_engine")
+
+class RuleAction(str, Enum):
+    BLOCK = "BLOCK"
+    STEP_UP = "STEP_UP"
+    PASS = "PASS"
+
 
 # OFAC / High-Risk Sanctioned Jurisdictions (ISO 2-letter codes)
 SANCTIONED_COUNTRIES = {"KP", "IR", "SY", "CU", "RU_SANCTION"}
@@ -51,8 +58,12 @@ class DeterministicRulesEngine(BaseRulesEngineOperator):
             vel=self.velocity_killswitch
         )
 
+    def evaluate(self, tx: Dict[str, Any], features: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Evaluate deterministic rules in sequence (alias for evaluate_rules)."""
+        return self.evaluate_rules(tx, features)
+
     def evaluate_rules(self, tx: Dict[str, Any], features: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Evaluate deterministic rules in sequence.
+        """Evaluate deterministic rules in sequence with null-safety and full rule accumulation.
         
         Returns:
             Dict with:
@@ -60,93 +71,100 @@ class DeterministicRulesEngine(BaseRulesEngineOperator):
                 - passed: bool
                 - triggered_rules: List[str]
                 - reason: str
+                - reasons: List[str]
         """
-        tx_id = tx.get("transaction_id", "TX_UNKNOWN")
-        cust_id = tx.get("customer_id", "CUST_UNKNOWN")
+        tx_id = str(tx.get("transaction_id") or "TX_UNKNOWN")
+        cust_id = str(tx.get("customer_id") or "CUST_UNKNOWN")
         tx_logger = bind_tx_context(logger, tx_id, cust_id)
 
         features = features or {}
         triggered_rules: List[str] = []
+        reasons: List[str] = []
         action = "PASS"
-        reason = "All deterministic checks passed."
+
+        def _safe_int(val: Any, default: int = 0) -> int:
+            if val is None:
+                return default
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        def _safe_float(val: Any, default: float = 0.0) -> float:
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
 
         # 1. OFAC Sanctions / Sanctioned Country Check
-        country = str(tx.get("country", tx.get("billing_country", ""))).upper()
+        country = str(tx.get("country") or tx.get("billing_country") or "").strip().upper()
         if country and country in self.sanctioned_countries:
             triggered_rules.append("RULE_OFAC_SANCTIONED_COUNTRY")
             action = "BLOCK"
-            reason = f"Transaction originates from sanctioned jurisdiction: {country}"
-            tx_logger.warning("Rule triggered: {reason}", reason=reason)
-            return {
-                "action": action,
-                "passed": False,
-                "triggered_rules": triggered_rules,
-                "reason": reason
-            }
+            r = f"Transaction originates from sanctioned jurisdiction: {country}"
+            reasons.append(r)
+            tx_logger.warning("Rule triggered: {reason}", reason=r)
 
         # 2. Compromised Card / BIN Blocklist Check
-        card_number = str(tx.get("card_number", tx.get("card_bin", "")))
-        if any(card_number.startswith(b) for b in self.compromised_bins):
+        card_number = str(tx.get("card_number") or tx.get("card_bin") or "").replace(" ", "").replace("-", "")
+        if card_number and any(card_number.startswith(b) for b in self.compromised_bins):
             triggered_rules.append("RULE_COMPROMISED_CARD_BIN")
             action = "BLOCK"
-            reason = f"Card BIN {card_number[:8]} matches known stolen card blocklist."
-            tx_logger.warning("Rule triggered: {reason}", reason=reason)
-            return {
-                "action": action,
-                "passed": False,
-                "triggered_rules": triggered_rules,
-                "reason": reason
-            }
+            r = f"Card BIN {card_number[:8]} matches known stolen card blocklist."
+            reasons.append(r)
+            tx_logger.warning("Rule triggered: {reason}", reason=r)
 
         # 3. Extreme Velocity Killswitch Check
-        velocity_count = int(features.get("velocity_60s", features.get("velocity_5m", tx.get("velocity_5m", 0))))
+        vel_val = features.get("velocity_60s")
+        if vel_val is None:
+            vel_val = features.get("velocity_5m")
+        if vel_val is None:
+            vel_val = tx.get("velocity_5m")
+        velocity_count = _safe_int(vel_val, 0)
         if velocity_count >= self.velocity_killswitch:
             triggered_rules.append("RULE_VELOCITY_KILLSWITCH_EXCEEDED")
             action = "BLOCK"
-            reason = f"Instantaneous velocity ({velocity_count} tx) exceeded automated killswitch limit ({self.velocity_killswitch})."
-            tx_logger.warning("Rule triggered: {reason}", reason=reason)
-            return {
-                "action": action,
-                "passed": False,
-                "triggered_rules": triggered_rules,
-                "reason": reason
-            }
+            r = f"Instantaneous velocity ({velocity_count} tx) exceeded automated killswitch limit ({self.velocity_killswitch})."
+            reasons.append(r)
+            tx_logger.warning("Rule triggered: {reason}", reason=r)
 
         # 4. Prohibited Merchant MCC Check
-        mcc = str(tx.get("mcc", tx.get("merchant_id", "")))
-        if any(prohibited in mcc for prohibited in self.prohibited_mccs):
+        mcc = str(tx.get("mcc") or tx.get("merchant_id") or "").strip().upper()
+        if mcc and any(mcc == prohibited or mcc.startswith(prohibited) or prohibited in mcc for prohibited in self.prohibited_mccs):
             triggered_rules.append("RULE_PROHIBITED_MERCHANT_MCC")
             action = "BLOCK"
-            reason = f"Merchant identifier or MCC '{mcc}' is prohibited by regulatory policy."
-            tx_logger.warning("Rule triggered: {reason}", reason=reason)
-            return {
-                "action": action,
-                "passed": False,
-                "triggered_rules": triggered_rules,
-                "reason": reason
-            }
+            r = f"Merchant identifier or MCC '{mcc}' is prohibited by regulatory policy."
+            reasons.append(r)
+            tx_logger.warning("Rule triggered: {reason}", reason=r)
 
         # 5. Impossible Travel Delta Check (> 1000 km/h)
-        travel_speed = float(features.get("travel_speed_kmh", 0.0))
+        travel_speed = _safe_float(features.get("travel_speed_kmh"), 0.0)
         if travel_speed > 1000.0:
             triggered_rules.append("RULE_IMPOSSIBLE_TRAVEL_SPEED")
-            action = "STEP_UP"
-            reason = f"Calculated travel speed ({travel_speed:.1f} km/h) indicates impossible physical travel."
-            tx_logger.warning("Rule triggered: {reason}", reason=reason)
+            if action != "BLOCK":
+                action = "STEP_UP"
+            r = f"Calculated travel speed ({travel_speed:.1f} km/h) indicates impossible physical travel."
+            reasons.append(r)
+            tx_logger.warning("Rule triggered: {reason}", reason=r)
 
         # 6. Single-Transaction Hard Ceiling Limit ($10,000+)
-        amount = float(tx.get("amount", 0.0))
+        amount = _safe_float(tx.get("amount"), 0.0)
         if amount >= self.hard_cap_amount:
             triggered_rules.append("RULE_HARD_CAP_EXCEEDED")
             if action != "BLOCK":
                 action = "STEP_UP"
-            reason = f"Transaction amount (${amount:,.2f}) exceeds regulatory single-swipe limit (${self.hard_cap_amount:,.2f}). Requires step-up wire verification."
-            tx_logger.info("Rule triggered: {reason}", reason=reason)
+            r = f"Transaction amount (${amount:,.2f}) exceeds regulatory single-swipe limit (${self.hard_cap_amount:,.2f}). Requires step-up wire verification."
+            reasons.append(r)
+            tx_logger.info("Rule triggered: {reason}", reason=r)
 
         passed = (action == "PASS")
+        reason = " | ".join(reasons) if reasons else "All deterministic checks passed."
         return {
             "action": action,
             "passed": passed,
             "triggered_rules": triggered_rules,
-            "reason": reason
+            "reason": reason,
+            "reasons": reasons
         }

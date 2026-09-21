@@ -12,6 +12,9 @@ and synthetic identity syndicates.
 """
 
 import os
+import os
+import time
+import threading
 from typing import Dict, Any, List, Set, Optional, Tuple
 from core.logger import get_logger
 
@@ -26,10 +29,13 @@ IGNORED_IDENTIFIERS = {"DEV_UNKNOWN", "UNKNOWN", "NONE", "DEV_DEFAULT", "IP_UNKN
 
 
 class FraudEntityGraph:
+    """Production-grade Entity Resolution Graph Engine for Mule Ring Detection
+    with thread-safe operations and sliding-window TTL node eviction."""
 
-    """Production-grade Entity Resolution Graph Engine for Mule Ring Detection."""
-
-    def __init__(self):
+    def __init__(self, max_nodes: int = 50000, ttl_seconds: float = 86400.0 * 7):
+        self._lock = threading.RLock()
+        self.max_nodes = max_nodes
+        self.ttl_seconds = ttl_seconds
         if nx is not None:
             self.graph = nx.Graph()
         else:
@@ -57,138 +63,199 @@ class FraudEntityGraph:
             card_id="CARD_001"
         )
 
-    def add_transaction_entities(
+    def prune_old_entities(self, max_age_seconds: Optional[float] = None, max_nodes: Optional[int] = None) -> int:
+        """Prune edges and orphan nodes older than TTL or exceeding capacity."""
+        with self._lock:
+            if self.graph is None:
+                return 0
 
+            max_age = max_age_seconds if max_age_seconds is not None else self.ttl_seconds
+            capacity = max_nodes if max_nodes is not None else self.max_nodes
+            now = time.time()
+            cutoff = now - max_age
+
+            # Find expired edges
+            expired_edges = []
+            for u, v, data in self.graph.edges(data=True):
+                edge_ts = data.get("timestamp", now)
+                if edge_ts < cutoff:
+                    expired_edges.append((u, v))
+
+            # If still over capacity, sort remaining edges by timestamp ascending and prune oldest
+            if len(self.graph) > capacity:
+                remaining_edges = [
+                    (u, v, data.get("timestamp", now))
+                    for u, v, data in self.graph.edges(data=True)
+                    if (u, v) not in expired_edges
+                ]
+                remaining_edges.sort(key=lambda x: x[2])
+                excess = len(self.graph) - capacity
+                for u, v, _ in remaining_edges[:excess]:
+                    expired_edges.append((u, v))
+
+            # Remove edges
+            for u, v in expired_edges:
+                if self.graph.has_edge(u, v):
+                    self.graph.remove_edge(u, v)
+
+            # Remove isolated orphan nodes (degree == 0)
+            isolated = [node for node in self.graph.nodes() if self.graph.degree(node) == 0]
+            for node in isolated:
+                self.graph.remove_node(node)
+
+            if expired_edges or isolated:
+                logger.info(
+                    "Pruned entity graph | Removed {e_count} edges, {n_count} orphan nodes | Current nodes: {total}",
+                    e_count=len(expired_edges),
+                    n_count=len(isolated),
+                    total=len(self.graph)
+                )
+
+            return len(isolated)
+
+    def add_transaction_entities(
         self,
         customer_id: str,
         device_id: Optional[str] = None,
         ip_address: Optional[str] = None,
-        card_id: Optional[str] = None
+        card_id: Optional[str] = None,
+        timestamp: Optional[float] = None
     ) -> None:
-        """Add nodes and edges linking customer to hardware/network entities."""
+        """Add nodes and edges linking customer to hardware/network entities (thread-safe)."""
+        now = timestamp or time.time()
         cust_node = f"cust:{customer_id}"
 
-        if self.graph is not None:
-            self.graph.add_node(cust_node, node_type="customer", label=customer_id)
+        with self._lock:
+            if self.graph is not None:
+                # Periodic pruning check
+                if len(self.graph) >= self.max_nodes:
+                    self.prune_old_entities()
 
-            if device_id and str(device_id).strip().upper() not in IGNORED_IDENTIFIERS:
-                dev_node = f"dev:{device_id}"
-                self.graph.add_node(dev_node, node_type="device", label=device_id)
-                self.graph.add_edge(cust_node, dev_node, relation="USED_DEVICE")
+                self.graph.add_node(cust_node, node_type="customer", label=customer_id, timestamp=now)
 
-            if ip_address and str(ip_address).strip().upper() not in IGNORED_IDENTIFIERS:
-                ip_node = f"ip:{ip_address}"
-                self.graph.add_node(ip_node, node_type="ip", label=ip_address)
-                self.graph.add_edge(cust_node, ip_node, relation="ROUTED_FROM")
+                if device_id and str(device_id).strip().upper() not in IGNORED_IDENTIFIERS:
+                    dev_node = f"dev:{device_id}"
+                    self.graph.add_node(dev_node, node_type="device", label=device_id, timestamp=now)
+                    self.graph.add_edge(cust_node, dev_node, relation="USED_DEVICE", timestamp=now)
 
-            if card_id and str(card_id).strip().upper() not in IGNORED_IDENTIFIERS:
-                card_node = f"card:{card_id}"
-                self.graph.add_node(card_node, node_type="card", label=card_id)
-                self.graph.add_edge(cust_node, card_node, relation="PAID_WITH")
+                if ip_address and str(ip_address).strip().upper() not in IGNORED_IDENTIFIERS:
+                    ip_node = f"ip:{ip_address}"
+                    self.graph.add_node(ip_node, node_type="ip", label=ip_address, timestamp=now)
+                    self.graph.add_edge(cust_node, ip_node, relation="ROUTED_FROM", timestamp=now)
 
-        else:
-            if device_id:
-                self._mock_edges.append((cust_node, f"dev:{device_id}", "device"))
-            if ip_address:
-                self._mock_edges.append((cust_node, f"ip:{ip_address}", "ip"))
-            if card_id:
-                self._mock_edges.append((cust_node, f"card:{card_id}", "card"))
+                if card_id and str(card_id).strip().upper() not in IGNORED_IDENTIFIERS:
+                    card_node = f"card:{card_id}"
+                    self.graph.add_node(card_node, node_type="card", label=card_id, timestamp=now)
+                    self.graph.add_edge(cust_node, card_node, relation="PAID_WITH", timestamp=now)
+
+            else:
+                if device_id:
+                    self._mock_edges.append((cust_node, f"dev:{device_id}", "device"))
+                if ip_address:
+                    self._mock_edges.append((cust_node, f"ip:{ip_address}", "ip"))
+                if card_id:
+                    self._mock_edges.append((cust_node, f"card:{card_id}", "card"))
+
 
     def analyze_customer_syndicate(self, customer_id: str) -> Dict[str, Any]:
-        """Analyze connected component community and detect shared-entity mule rings."""
+        """Analyze connected component community and detect shared-entity mule rings (thread-safe)."""
         cust_node = f"cust:{customer_id}"
 
-        if self.graph is None or not self.graph.has_node(cust_node):
+        with self._lock:
+            if self.graph is None or not self.graph.has_node(cust_node):
+                return {
+                    "customer_id": customer_id,
+                    "mule_ring_detected": False,
+                    "cluster_risk_level": "LOW",
+                    "connected_customers": [customer_id],
+                    "shared_devices": [],
+                    "shared_ips": [],
+                    "cluster_size": 1,
+                    "summary": f"No suspicious entity sharing detected for {customer_id}."
+                }
+
+            # 1. Extract 2-hop ego network (Customer -> Entity -> Other Customers)
+            two_hop_neighbors = set()
+            for entity in self.graph.neighbors(cust_node):
+                for neighbor in self.graph.neighbors(entity):
+                    if neighbor.startswith("cust:"):
+                        two_hop_neighbors.add(neighbor.replace("cust:", ""))
+
+            # 2. Extract shared devices
+            shared_devices = []
+            for dev in [n for n in self.graph.neighbors(cust_node) if n.startswith("dev:")]:
+                linked_custs = [c for c in self.graph.neighbors(dev) if c.startswith("cust:")]
+                if len(linked_custs) > 1:
+                    shared_devices.append(dev.replace("dev:", ""))
+
+            # 3. Extract shared IPs
+            shared_ips = []
+            for ip in [n for n in self.graph.neighbors(cust_node) if n.startswith("ip:")]:
+                linked_custs = [c for c in self.graph.neighbors(ip) if c.startswith("cust:")]
+                if len(linked_custs) > 1:
+                    shared_ips.append(ip.replace("ip:", ""))
+
+            # 4. Assess mule ring severity
+            cluster_size = len(two_hop_neighbors)
+            mule_ring_detected = len(shared_devices) > 0 or len(shared_ips) > 0 or cluster_size >= 3
+
+            if cluster_size >= 4 or len(shared_devices) >= 2:
+                risk_level = "CRITICAL"
+            elif mule_ring_detected:
+                risk_level = "HIGH"
+            else:
+                risk_level = "LOW"
+
+            if mule_ring_detected:
+                summary = (
+                    f"Mule Ring Alert: Account {customer_id} is part of a {cluster_size}-account syndicate cluster. "
+                    f"Sharing {len(shared_devices)} device(s) and {len(shared_ips)} IP(s) across accounts: "
+                    f"{', '.join(sorted(list(two_hop_neighbors)))}."
+                )
+            else:
+                summary = f"Account {customer_id} operates on isolated devices/IPs with no multi-account sharing."
+
             return {
                 "customer_id": customer_id,
-                "mule_ring_detected": False,
-                "cluster_risk_level": "LOW",
-                "connected_customers": [customer_id],
-                "shared_devices": [],
-                "shared_ips": [],
-                "cluster_size": 1,
-                "summary": f"No suspicious entity sharing detected for {customer_id}."
+                "mule_ring_detected": mule_ring_detected,
+                "cluster_risk_level": risk_level,
+                "connected_customers": sorted(list(two_hop_neighbors)),
+                "shared_devices": shared_devices,
+                "shared_ips": shared_ips,
+                "cluster_size": cluster_size,
+                "summary": summary
             }
 
-        # 1. Extract 2-hop ego network (Customer -> Entity -> Other Customers)
-        two_hop_neighbors = set()
-        for entity in self.graph.neighbors(cust_node):
-            for neighbor in self.graph.neighbors(entity):
-                if neighbor.startswith("cust:"):
-                    two_hop_neighbors.add(neighbor.replace("cust:", ""))
-
-        # 2. Extract shared devices
-        shared_devices = []
-        for dev in [n for n in self.graph.neighbors(cust_node) if n.startswith("dev:")]:
-            linked_custs = [c for c in self.graph.neighbors(dev) if c.startswith("cust:")]
-            if len(linked_custs) > 1:
-                shared_devices.append(dev.replace("dev:", ""))
-
-        # 3. Extract shared IPs
-        shared_ips = []
-        for ip in [n for n in self.graph.neighbors(cust_node) if n.startswith("ip:")]:
-            linked_custs = [c for c in self.graph.neighbors(ip) if c.startswith("cust:")]
-            if len(linked_custs) > 1:
-                shared_ips.append(ip.replace("ip:", ""))
-
-        # 4. Assess mule ring severity
-        cluster_size = len(two_hop_neighbors)
-        mule_ring_detected = len(shared_devices) > 0 or len(shared_ips) > 0 or cluster_size >= 3
-
-        if cluster_size >= 4 or len(shared_devices) >= 2:
-            risk_level = "CRITICAL"
-        elif mule_ring_detected:
-            risk_level = "HIGH"
-        else:
-            risk_level = "LOW"
-
-        if mule_ring_detected:
-            summary = (
-                f"Mule Ring Alert: Account {customer_id} is part of a {cluster_size}-account syndicate cluster. "
-                f"Sharing {len(shared_devices)} device(s) and {len(shared_ips)} IP(s) across accounts: "
-                f"{', '.join(sorted(list(two_hop_neighbors)))}."
-            )
-        else:
-            summary = f"Account {customer_id} operates on isolated devices/IPs with no multi-account sharing."
-
-        return {
-            "customer_id": customer_id,
-            "mule_ring_detected": mule_ring_detected,
-            "cluster_risk_level": risk_level,
-            "connected_customers": sorted(list(two_hop_neighbors)),
-            "shared_devices": shared_devices,
-            "shared_ips": shared_ips,
-            "cluster_size": cluster_size,
-            "summary": summary
-        }
-
     def get_cluster_subgraph_data(self, customer_id: str) -> Dict[str, Any]:
-        """Return nodes and edges in the customer's ego-network for visualization."""
+        """Return nodes and edges in the customer's ego-network for visualization (thread-safe)."""
         cust_node = f"cust:{customer_id}"
-        if self.graph is None or not self.graph.has_node(cust_node):
-            return {"nodes": [{"id": customer_id, "type": "customer"}], "edges": []}
 
-        # Collect 2-hop ego nodes
-        subgraph_nodes = {cust_node}
-        for n1 in self.graph.neighbors(cust_node):
-            subgraph_nodes.add(n1)
-            for n2 in self.graph.neighbors(n1):
-                subgraph_nodes.add(n2)
+        with self._lock:
+            if self.graph is None or not self.graph.has_node(cust_node):
+                return {"nodes": [{"id": customer_id, "type": "customer"}], "edges": []}
 
-        subgraph = self.graph.subgraph(subgraph_nodes)
+            # Collect 2-hop ego nodes
+            subgraph_nodes = {cust_node}
+            for n1 in self.graph.neighbors(cust_node):
+                subgraph_nodes.add(n1)
+                for n2 in self.graph.neighbors(n1):
+                    subgraph_nodes.add(n2)
 
-        nodes_data = []
-        for n in subgraph.nodes():
-            n_type = subgraph.nodes[n].get("node_type", "unknown")
-            lbl = subgraph.nodes[n].get("label", n)
-            nodes_data.append({"id": n, "label": lbl, "type": n_type})
+            subgraph = self.graph.subgraph(subgraph_nodes)
 
-        edges_data = []
-        for u, v in subgraph.edges():
-            rel = subgraph.edges[u, v].get("relation", "LINKED")
-            edges_data.append({"source": u, "target": v, "relation": rel})
+            nodes_data = []
+            for n in subgraph.nodes():
+                n_type = subgraph.nodes[n].get("node_type", "unknown")
+                lbl = subgraph.nodes[n].get("label", n)
+                nodes_data.append({"id": n, "label": lbl, "type": n_type})
 
-        return {"nodes": nodes_data, "edges": edges_data}
+            edges_data = []
+            for u, v in subgraph.edges():
+                rel = subgraph.edges[u, v].get("relation", "LINKED")
+                edges_data.append({"source": u, "target": v, "relation": rel})
+
+            return {"nodes": nodes_data, "edges": edges_data}
+
 
 
 # Global singleton instance for easy import and sharing

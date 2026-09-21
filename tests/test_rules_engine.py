@@ -138,7 +138,65 @@ def test_lowercase_country_code_normalized(rules_engine):
         "card_number": "424242424242",
     }
     decision = rules_engine.evaluate_rules(tx, features={})
-    # Either blocked (if engine normalizes) or passed (if engine is case-sensitive)
-    # Either way it must not crash
-    assert "passed" in decision
-    assert "action" in decision
+    assert decision["passed"] is False
+    assert decision["action"] == "BLOCK"
+    assert "RULE_OFAC_SANCTIONED_COUNTRY" in decision["triggered_rules"]
+
+def test_null_valued_features_do_not_crash(rules_engine):
+    """Verify null-safety when feature keys explicitly map to None."""
+    tx = {
+        "transaction_id": "TX_NULL_FEAT",
+        "customer_id": "CUST_NULL",
+        "amount": None,
+        "country": None,
+        "card_number": None,
+        "merchant_id": None
+    }
+    features = {
+        "velocity_60s": None,
+        "velocity_5m": None,
+        "travel_speed_kmh": None
+    }
+    decision = rules_engine.evaluate_rules(tx, features=features)
+    assert decision["passed"] is True
+    assert decision["action"] == "PASS"
+
+def test_multi_rule_accumulation_step_up(rules_engine):
+    """Verify simultaneous impossible travel + hard cap retains both rules and sets STEP_UP."""
+    tx = {
+        "transaction_id": "TX_MULTI_STEPUP",
+        "customer_id": "CUST_WHALE",
+        "amount": 15000.0,  # Exceeds 10,000 cap
+        "country": "US"
+    }
+    features = {
+        "travel_speed_kmh": 1200.0  # Impossible travel
+    }
+    decision = rules_engine.evaluate_rules(tx, features=features)
+    assert decision["passed"] is False
+    assert decision["action"] == "STEP_UP"
+    assert "RULE_IMPOSSIBLE_TRAVEL_SPEED" in decision["triggered_rules"]
+    assert "RULE_HARD_CAP_EXCEEDED" in decision["triggered_rules"]
+    assert len(decision["reasons"]) == 2
+
+def test_multi_rule_block_precedence(rules_engine):
+    """Verify BLOCK takes precedence over STEP_UP while retaining all triggered rules."""
+    tx = {
+        "transaction_id": "TX_MULTI_BLOCK",
+        "customer_id": "CUST_SANCTIONED_WHALE",
+        "amount": 25000.0,  # Hard cap
+        "country": "IR",     # Sanctioned
+        "card_number": "4111119900001111"  # Compromised card
+    }
+    features = {
+        "travel_speed_kmh": 1500.0,
+        "velocity_60s": 12
+    }
+    decision = rules_engine.evaluate_rules(tx, features=features)
+    assert decision["passed"] is False
+    assert decision["action"] == "BLOCK"
+    assert "RULE_OFAC_SANCTIONED_COUNTRY" in decision["triggered_rules"]
+    assert "RULE_COMPROMISED_CARD_BIN" in decision["triggered_rules"]
+    assert "RULE_VELOCITY_KILLSWITCH_EXCEEDED" in decision["triggered_rules"]
+    assert "RULE_HARD_CAP_EXCEEDED" in decision["triggered_rules"]
+    assert "RULE_IMPOSSIBLE_TRAVEL_SPEED" in decision["triggered_rules"]

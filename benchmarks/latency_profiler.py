@@ -41,12 +41,13 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
     onnx_scorer = ONNXModelScorer()
     xgb_scorer = XGBoostScorerOperator()
 
-    # Pre-populate some history
-    for i in range(10):
+    # Pre-populate warm-up events across customers
+    logger.info("Running 100 benchmark warm-up iterations...")
+    for i in range(100):
         await feature_store.record_event(
-            customer_id=f"CUST_BENCH_{i:03d}",
+            customer_id=f"CUST_BENCH_{i:04d}",
             timestamp=time.time() - 100.0,
-            amount=50.0 + (i * 10),
+            amount=50.0 + (i * 5),
             lat=40.7128,
             lon=-74.0060
         )
@@ -61,7 +62,7 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _worker(tx_idx: int):
-        cust_id = f"CUST_BENCH_{tx_idx % 10:03d}"
+        cust_id = f"CUST_BENCH_{tx_idx % 2500:04d}"
         now_ts = time.time()
         tx = {
             "transaction_id": f"TX_BENCH_{tx_idx:05d}",
@@ -89,9 +90,9 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
             feat_ms = (t_feat_end - t_feat_start) * 1000.0
             latencies_feature.append(feat_ms)
 
-            # 2. Deterministic Rules
+            # 2. Deterministic Rules (CPU-bound: offload via asyncio.to_thread)
             t_rule_start = time.perf_counter()
-            decision = rules_engine.evaluate_rules(tx, feats)
+            decision = await asyncio.to_thread(rules_engine.evaluate_rules, tx, feats)
             t_rule_end = time.perf_counter()
             rule_ms = (t_rule_end - t_rule_start) * 1000.0
             latencies_rules.append(rule_ms)
@@ -104,9 +105,9 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
                 **{f"v{i}": 0.05 * (tx_idx % 10) for i in range(1, 29)}
             }
 
-            # 3. ONNX Inference (Full Vector)
+            # 3. ONNX Inference (CPU-bound: offload via asyncio.to_thread)
             t_onnx_start = time.perf_counter()
-            onnx_prob = onnx_scorer.predict_proba(model_features)
+            onnx_prob = await asyncio.to_thread(onnx_scorer.predict_proba, model_features)
             t_onnx_end = time.perf_counter()
             onnx_ms = (t_onnx_end - t_onnx_start) * 1000.0
             latencies_onnx.append(onnx_ms)
@@ -115,7 +116,7 @@ async def run_in_process_benchmark(num_requests: int = 1000, concurrency: int = 
 
             # 4. Standard XGBoost Inference (Full Vector for comparison)
             t_xgb_start = time.perf_counter()
-            xgb_prob = xgb_scorer.predict_proba(model_features)
+            xgb_prob = await asyncio.to_thread(xgb_scorer.predict_proba, model_features)
             t_xgb_end = time.perf_counter()
             latencies_xgb.append((t_xgb_end - t_xgb_start) * 1000.0)
 

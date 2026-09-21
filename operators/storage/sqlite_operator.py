@@ -22,7 +22,9 @@ class SqliteStorageOperator(BaseStorageOperator):
             self.db_path = db_path
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -86,54 +88,72 @@ class SqliteStorageOperator(BaseStorageOperator):
             conn.commit()
 
     async def save_raw_transaction(self, tx: Dict[str, Any]) -> None:
+        await self.save_raw_transactions_batch([tx])
+
+    async def save_raw_transactions_batch(self, transactions: List[Dict[str, Any]]) -> None:
+        if not transactions:
+            return
         loop = asyncio.get_running_loop()
         def _sync_save():
+            records = [
+                (
+                    tx["transaction_id"],
+                    str(tx.get("timestamp", "")),
+                    tx["customer_id"],
+                    tx.get("merchant_id", "UNKNOWN"),
+                    float(tx.get("amount", 0.0)),
+                    float(tx.get("lat", 0.0)) if tx.get("lat") is not None else None,
+                    float(tx.get("lon", 0.0)) if tx.get("lon") is not None else None,
+                    int(tx.get("is_fraud", 0)),
+                    json.dumps(tx)
+                )
+                for tx in transactions
+            ]
             with self._get_connection() as conn:
-                conn.execute(
+                conn.executemany(
                     """
                     INSERT OR REPLACE INTO raw_transactions 
                     (transaction_id, timestamp, customer_id, merchant_id, amount, lat, lon, is_fraud, raw_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        tx["transaction_id"],
-                        str(tx.get("timestamp", "")),
-                        tx["customer_id"],
-                        tx.get("merchant_id", "UNKNOWN"),
-                        float(tx.get("amount", 0.0)),
-                        float(tx.get("lat", 0.0)) if tx.get("lat") is not None else None,
-                        float(tx.get("lon", 0.0)) if tx.get("lon") is not None else None,
-                        int(tx.get("is_fraud", 0)),
-                        json.dumps(tx)
-                    )
+                    records
                 )
                 conn.commit()
         await loop.run_in_executor(None, _sync_save)
 
     async def save_engineered_features(self, features: Dict[str, Any]) -> None:
+        await self.save_engineered_features_batch([features])
+
+    async def save_engineered_features_batch(self, features_list: List[Dict[str, Any]]) -> None:
+        if not features_list:
+            return
         loop = asyncio.get_running_loop()
         def _sync_save():
+            records = [
+                (
+                    f["transaction_id"],
+                    f["customer_id"],
+                    str(f.get("timestamp", "")),
+                    float(f.get("amount", 0.0)),
+                    int(f.get("velocity_5m", 0)),
+                    int(f.get("velocity_60m", 0)),
+                    float(f.get("amount_deviation", 0.0)),
+                    float(f.get("time_since_last_tx_sec", 0.0)),
+                    float(f.get("geo_distance_km", 0.0)),
+                    int(f.get("is_fraud", 0)),
+                    json.dumps(f)
+                )
+                for f in features_list
+            ]
             with self._get_connection() as conn:
-                conn.execute(
+                conn.executemany(
                     """
                     INSERT OR REPLACE INTO engineered_features
                     (transaction_id, customer_id, timestamp, amount, velocity_5m, velocity_60m, 
                      amount_deviation, time_since_last_tx_sec, geo_distance_km, is_fraud, features_json)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        features["transaction_id"],
-                        features["customer_id"],
-                        str(features.get("timestamp", "")),
-                        float(features.get("amount", 0.0)),
-                        int(features.get("velocity_5m", 0)),
-                        int(features.get("velocity_60m", 0)),
-                        float(features.get("amount_deviation", 0.0)),
-                        float(features.get("time_since_last_tx_sec", 0.0)),
-                        float(features.get("geo_distance_km", 0.0)),
-                        int(features.get("is_fraud", 0)),
-                        json.dumps(features)
-                    )
+                    records
                 )
                 conn.commit()
         await loop.run_in_executor(None, _sync_save)

@@ -1,6 +1,6 @@
 # Fraud ML Model Performance Scorecard
 
-**Generated:** 2026-09-21 09:21:16 UTC  
+**Generated:** 2026-09-21 11:53:17 UTC  
 **Model Version:** `fraud-xgb-v1`  
 **Champion Strategy:** `smote_xgboost`  
 **Evaluated Slice:** 20 held-out test transactions  

@@ -19,21 +19,40 @@ logger = get_logger("resilience")
 DLQ_DIR = Path(__file__).resolve().parent.parent / "logs" / "dlq"
 DLQ_DIR.mkdir(parents=True, exist_ok=True)
 
+import threading
+import concurrent.futures
+import inspect
+
 class DeadLetterQueue:
-    """Dead-Letter Queue handler capturing poisoned or unprocessable messages."""
+    """Thread-safe, non-blocking Dead-Letter Queue handler capturing poisoned messages."""
 
     def __init__(self, dlq_file: Path = None):
         self.dlq_file = dlq_file or (DLQ_DIR / "poisoned_messages.jsonl")
+        self._lock = threading.Lock()
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="dlq_writer")
 
-    def route_to_dlq(self, payload: Any, error: Exception, context: Dict[str, Any] = None):
-        """Record poisoned message with error details without halting execution."""
+    def _sync_append(self, line: str):
+        with self._lock:
+            try:
+                self.dlq_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.dlq_file, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception as e:
+                logger.error("Failed to write to DLQ file: {err}", err=str(e))
+
+    def route_to_dlq(self, payload: Any = None, error: Exception = None, context: Dict[str, Any] = None, **kwargs):
+        """Record poisoned message with error details asynchronously without halting execution."""
+        actual_payload = payload if payload is not None else kwargs.pop("poison_message", None)
+        actual_error = error if error is not None else kwargs.pop("error", None)
+        ctx = dict(context or {})
+        ctx.update(kwargs)
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "payload": payload,
-            "error_type": type(error).__name__,
-            "error_message": str(error),
+            "payload": actual_payload,
+            "error_type": type(actual_error).__name__ if actual_error else "UnknownError",
+            "error_message": str(actual_error) if actual_error else "",
             "stack_trace": traceback.format_exc(),
-            "context": context or {}
+            "context": ctx
         }
         logger.error(
             "Transaction routed to DLQ | error={error_type}: {error_msg} | context={context}",
@@ -41,13 +60,17 @@ class DeadLetterQueue:
             error_msg=entry["error_message"],
             context=entry["context"]
         )
-        with open(self.dlq_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
+        line = json.dumps(entry, default=str)
+        self._executor.submit(self._sync_append, line)
+
+    def close(self):
+        """Flush and shutdown the writer executor cleanly."""
+        self._executor.shutdown(wait=True)
 
 # Global DLQ instance
 global_dlq = DeadLetterQueue()
 
-def isolated_async_execution(fallback_factory: Callable[[Exception, Dict[str, Any]], Any]):
+def isolated_async_execution(fallback_factory: Callable[..., Any]):
     """Decorator for async functions: catches exceptions, logs them, and returns a graceful fallback."""
     def decorator(func: Callable):
         @functools.wraps(func)
@@ -61,6 +84,12 @@ def isolated_async_execution(fallback_factory: Callable[[Exception, Dict[str, An
                     func=func_name,
                     exc=str(exc)
                 )
+                try:
+                    sig = inspect.signature(fallback_factory)
+                    if len(sig.parameters) >= 3:
+                        return fallback_factory(exc, args, kwargs)
+                except Exception:
+                    pass
                 return fallback_factory(exc, kwargs)
         return wrapper
     return decorator

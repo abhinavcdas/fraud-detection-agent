@@ -23,9 +23,67 @@ class PostgresStorageOperator(BaseStorageOperator):
         loop = asyncio.get_running_loop()
         def _connect():
             try:
-                from psycopg2.extras import pool
-                self.pool = pool.SimpleConnectionPool(minconn=1, maxconn=10, dsn=self.database_url)
-                logger.info("Initialized PostgreSQL connection pool.")
+                import psycopg2.pool
+                self.pool = psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=20, dsn=self.database_url)
+                logger.info("Initialized PostgreSQL ThreadedConnectionPool.")
+
+                # Ensure required tables exist
+                conn = self._get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS raw_transactions (
+                                transaction_id VARCHAR(64) PRIMARY KEY,
+                                timestamp TIMESTAMP WITH TIME ZONE,
+                                time_step DOUBLE PRECISION,
+                                customer_id VARCHAR(64) NOT NULL,
+                                merchant_id VARCHAR(64) NOT NULL,
+                                amount DOUBLE PRECISION NOT NULL,
+                                lat DOUBLE PRECISION,
+                                lon DOUBLE PRECISION,
+                                is_fraud INTEGER DEFAULT 0,
+                                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                            );
+                            CREATE INDEX IF NOT EXISTS idx_raw_cust_time ON raw_transactions (customer_id, timestamp DESC);
+
+                            CREATE TABLE IF NOT EXISTS engineered_features (
+                                transaction_id VARCHAR(64) PRIMARY KEY,
+                                customer_id VARCHAR(64) NOT NULL,
+                                timestamp TIMESTAMP WITH TIME ZONE,
+                                amount DOUBLE PRECISION NOT NULL,
+                                velocity_5m INTEGER NOT NULL DEFAULT 0,
+                                velocity_60m INTEGER NOT NULL DEFAULT 0,
+                                amount_deviation DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                                time_since_last_tx_sec DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                                geo_distance_km DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                                travel_speed_kmh DOUBLE PRECISION DEFAULT 0.0,
+                                is_fraud INTEGER DEFAULT 0
+                            );
+                            CREATE INDEX IF NOT EXISTS idx_eng_cust ON engineered_features (customer_id);
+
+                            CREATE TABLE IF NOT EXISTS audit_log (
+                                audit_id SERIAL PRIMARY KEY,
+                                transaction_id VARCHAR(64) NOT NULL,
+                                timestamp TIMESTAMP WITH TIME ZONE,
+                                input_hash VARCHAR(64) NOT NULL,
+                                model_version VARCHAR(64) NOT NULL,
+                                fraud_score DOUBLE PRECISION NOT NULL,
+                                is_flagged BOOLEAN NOT NULL,
+                                agent_decision VARCHAR(64),
+                                agent_report JSONB,
+                                guardrail_status VARCHAR(32),
+                                faithfulness_score DOUBLE PRECISION,
+                                latency_ms DOUBLE PRECISION
+                            );
+                            CREATE INDEX IF NOT EXISTS idx_audit_tx_id ON audit_log (transaction_id);
+                        """)
+                        conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    logger.warning("Could not execute DDL schema check: {err}", err=str(e))
+                finally:
+                    self._put_conn(conn)
+
             except ImportError:
                 raise ImportError("psycopg2 is required for PostgresStorageOperator. Install it via `pip install psycopg2-binary`.")
         await loop.run_in_executor(None, _connect)
@@ -37,12 +95,17 @@ class PostgresStorageOperator(BaseStorageOperator):
         self.pool.putconn(conn)
 
     async def save_raw_transaction(self, tx: Dict[str, Any]) -> None:
+        await self.save_raw_transactions_batch([tx])
+
+    async def save_raw_transactions_batch(self, txs: List[Dict[str, Any]]) -> None:
+        if not txs:
+            return
         loop = asyncio.get_running_loop()
         def _sync_save():
             conn = self._get_conn()
             try:
                 with conn.cursor() as cur:
-                    cols = [k for k in tx.keys() if k in {
+                    cols = [k for k in txs[0].keys() if k in {
                         "transaction_id", "timestamp", "time_step", "customer_id", "merchant_id", "amount",
                         "lat", "lon", "is_fraud", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9",
                         "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20",
@@ -55,21 +118,30 @@ class PostgresStorageOperator(BaseStorageOperator):
                         VALUES ({placeholders})
                         ON CONFLICT (transaction_id) DO NOTHING
                     """
-                    cur.execute(query, [tx[c] for c in cols])
+                    records = [[tx.get(c) for c in cols] for tx in txs]
+                    cur.executemany(query, records)
                     conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self._put_conn(conn)
         await loop.run_in_executor(None, _sync_save)
 
     async def save_engineered_features(self, features: Dict[str, Any]) -> None:
+        await self.save_engineered_features_batch([features])
+
+    async def save_engineered_features_batch(self, features_list: List[Dict[str, Any]]) -> None:
+        if not features_list:
+            return
         loop = asyncio.get_running_loop()
         def _sync_save():
             conn = self._get_conn()
             try:
                 with conn.cursor() as cur:
-                    cols = [k for k in features.keys() if k in {
+                    cols = [k for k in features_list[0].keys() if k in {
                         "transaction_id", "customer_id", "timestamp", "amount", "velocity_5m", "velocity_60m",
-                        "amount_deviation", "time_since_last_tx_sec", "geo_distance_km", "is_fraud",
+                        "amount_deviation", "time_since_last_tx_sec", "geo_distance_km", "travel_speed_kmh", "is_fraud",
                         "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12",
                         "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
                         "v24", "v25", "v26", "v27", "v28"
@@ -85,8 +157,12 @@ class PostgresStorageOperator(BaseStorageOperator):
                             amount_deviation = EXCLUDED.amount_deviation,
                             geo_distance_km = EXCLUDED.geo_distance_km
                     """
-                    cur.execute(query, [features[c] for c in cols])
+                    records = [[f.get(c) for c in cols] for f in features_list]
+                    cur.executemany(query, records)
                     conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self._put_conn(conn)
         await loop.run_in_executor(None, _sync_save)
@@ -103,6 +179,9 @@ class PostgresStorageOperator(BaseStorageOperator):
                         (customer_id, limit)
                     )
                     return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self._put_conn(conn)
         return await loop.run_in_executor(None, _sync_get)
@@ -133,6 +212,9 @@ class PostgresStorageOperator(BaseStorageOperator):
                         audit_record.get("latency_ms")
                     ))
                     conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self._put_conn(conn)
         await loop.run_in_executor(None, _sync_save)
@@ -149,6 +231,9 @@ class PostgresStorageOperator(BaseStorageOperator):
                         (limit,)
                     )
                     return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self._put_conn(conn)
         return await loop.run_in_executor(None, _sync_get)
@@ -166,6 +251,9 @@ class PostgresStorageOperator(BaseStorageOperator):
                     )
                     row = cur.fetchone()
                     return dict(row) if row else None
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self._put_conn(conn)
         return await loop.run_in_executor(None, _sync_get)

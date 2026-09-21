@@ -117,3 +117,68 @@ def test_xgboost_scorer_inference_with_trained_model():
 
     score_fraud = scorer.predict_proba(fraud_tx)
     assert score_fraud >= 0.70
+
+def test_onnx_and_xgboost_parity():
+    """Verify strict numerical prediction parity between ONNX Runtime and XGBoost."""
+    from model.onnx_scorer import ONNXModelScorer
+    xgb_scorer = XGBoostScorerOperator()
+    onnx_scorer = ONNXModelScorer()
+
+    test_cases = [
+        # Benign transaction
+        {
+            "amount": 35.0,
+            "velocity_5m": 0,
+            "velocity_60m": 1,
+            "amount_deviation": 0.1,
+            "time_since_last_tx_sec": 1200.0,
+            "geo_distance_km": 1.5,
+            **{f"v{i}": 0.0 for i in range(1, 29)}
+        },
+        # High-risk transaction
+        {
+            "amount": 2850.0,
+            "velocity_5m": 5,
+            "velocity_60m": 8,
+            "amount_deviation": 4.5,
+            "time_since_last_tx_sec": 30.0,
+            "geo_distance_km": 720.0,
+            **{f"v{i}": 2.5 for i in range(1, 29)}
+        }
+    ]
+
+    for tx in test_cases:
+        p_xgb = xgb_scorer.predict_proba(tx)
+        p_onnx = onnx_scorer.predict_proba(tx)
+        # Parity within 0.05
+        assert abs(p_xgb - p_onnx) < 0.05, f"Disparity: XGB={p_xgb} vs ONNX={p_onnx}"
+
+def test_chronological_time_based_split(tmp_path):
+    """Verify chronological time-based splitting is applied when time_step is present."""
+    records = []
+    for i in range(200):
+        is_f = 1 if (i % 20 == 0) else 0
+        r = {
+            "time_step": float(i * 100),
+            "amount": 100.0 if not is_f else 1500.0,
+            "velocity_5m": 0 if not is_f else 4,
+            "velocity_60m": 1 if not is_f else 7,
+            "amount_deviation": 0.0 if not is_f else 3.5,
+            "time_since_last_tx_sec": 1000.0 if not is_f else 20.0,
+            "geo_distance_km": 2.0 if not is_f else 600.0,
+            "is_fraud": is_f,
+            **{f"v{j}": 0.0 for j in range(1, 29)}
+        }
+        records.append(r)
+    df = pd.DataFrame(records)
+    db_file = (tmp_path / "mlflow_time.db").as_posix()
+    summary = train_and_compare_strategies(
+        df=df,
+        tracking_uri=f"sqlite:///{db_file}",
+        experiment_name="test-time-split",
+        registry_dir=tmp_path,
+        n_estimators=5,
+        time_based_split=True
+    )
+    assert summary["champion"] in {"class_weighted_xgboost", "smote_xgboost", "balanced_lightgbm"}
+

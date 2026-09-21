@@ -26,14 +26,16 @@ MERCHANT_CATALOG = {
     7: {"category": "utility_telecom_services", "chargeback_rate_pct": 0.2, "risk_tier": "LOW"},
 }
 
+import concurrent.futures
+
+_ASYNC_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent_tools_pool")
+
 def _run_async_or_sync(coro):
     """Safely execute async storage call whether inside or outside an active event loop."""
     try:
         loop = asyncio.get_running_loop()
-        # If running inside an existing loop, run in a separate thread
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(lambda: asyncio.run(coro)).result()
+        # If running inside an existing loop, run in a dedicated worker thread
+        return _ASYNC_POOL.submit(lambda: asyncio.run(coro)).result()
     except RuntimeError:
         return asyncio.run(coro)
 
@@ -46,28 +48,29 @@ def get_customer_history(customer_id: str) -> Dict[str, Any]:
     Returns:
         Dict containing transaction count, rolling average amount, standard deviation, and prior fraud flags.
     """
+    cid = str(customer_id or "CUST_UNKNOWN")
     try:
         storage = get_storage_operator()
         
         async def _fetch():
             await storage.initialize()
-            return await storage.get_customer_history(customer_id, limit=50)
+            return await storage.get_customer_history(cid, limit=50)
 
         history = _run_async_or_sync(_fetch())
     except Exception as e:
-        logger.warning("Could not query storage for customer {cid}: {err}", cid=customer_id, err=str(e))
+        logger.warning("Could not query storage for customer {cid}: {err}", cid=cid, err=str(e))
         history = []
 
     if history:
-        amounts = [float(tx.get("amount", 0.0)) for tx in history]
+        amounts = [float(tx.get("amount", 0.0) or 0.0) for tx in history]
         avg_amt = sum(amounts) / len(amounts)
         var_amt = sum((x - avg_amt) ** 2 for x in amounts) / len(amounts)
         std_amt = math.sqrt(var_amt)
-        prior_fraud = sum(1 for tx in history if int(tx.get("is_fraud", 0)) == 1)
+        prior_fraud = sum(1 for tx in history if int(tx.get("is_fraud", 0) or 0) == 1)
         last_tx_time = str(history[0].get("timestamp", ""))
 
         return {
-            "customer_id": customer_id,
+            "customer_id": cid,
             "total_prior_transactions": len(history),
             "rolling_avg_amount": round(avg_amt, 2),
             "rolling_std_amount": round(std_amt, 2),
@@ -79,7 +82,7 @@ def get_customer_history(customer_id: str) -> Dict[str, Any]:
 
     # Baseline for cold-start customer
     return {
-        "customer_id": customer_id,
+        "customer_id": cid,
         "total_prior_transactions": 0,
         "rolling_avg_amount": 0.0,
         "rolling_std_amount": 0.0,
@@ -95,7 +98,7 @@ def check_known_patterns(transaction: Dict[str, Any]) -> Dict[str, Any]:
     Checks:
     - High velocity burst (>= 3 transactions in 5 minutes)
     - Structuring suspicion (amount just under $10,000 threshold)
-    - Impossible travel velocity (> 500 km within 1 hour)
+    - Impossible travel velocity (> 500 km within 1 hour, requiring previous transaction)
     - Severe amount deviation (> 3.5 sigma above rolling average)
     
     Args:
@@ -104,13 +107,15 @@ def check_known_patterns(transaction: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict detailing triggered rules, pattern count, and heuristic severity score.
     """
+    if not isinstance(transaction, dict):
+        transaction = {}
+
     amount = float(transaction.get("amount") or 0.0)
     velocity_5m = int(transaction.get("velocity_5m") or 0)
     velocity_60m = int(transaction.get("velocity_60m") or 0)
     geo_distance = float(transaction.get("geo_distance_km") or 0.0)
     time_since_last = float(transaction.get("time_since_last_tx_sec") or 0.0)
     amount_deviation = float(transaction.get("amount_deviation") or 0.0)
-
 
     triggered_rules = []
     
@@ -120,9 +125,13 @@ def check_known_patterns(transaction: Dict[str, Any]) -> Dict[str, Any]:
         triggered_rules.append(f"HOURLY_VELOCITY_SPIKE: {velocity_60m} transactions in last 60 minutes")
     if 9000.0 <= amount <= 9999.0:
         triggered_rules.append(f"STRUCTURING_SUSPICION: Amount ${amount:.2f} just under $10,000 reporting threshold")
-    if geo_distance > 500.0 and (time_since_last < 3600.0 or time_since_last == 0.0):
-        speed_kmh = (geo_distance / max(time_since_last, 60)) * 3600
-        triggered_rules.append(f"IMPOSSIBLE_TRAVEL: {geo_distance:.1f} km jump within {time_since_last:.0f} seconds (~{speed_kmh:.0f} km/h)")
+    # Impossible travel requires previous activity; cold-start accounts with 0 velocity and 0 time delta cannot have traveled
+    is_cold_start = (velocity_5m == 0 and velocity_60m == 0 and time_since_last <= 0.0)
+    if geo_distance > 500.0 and not is_cold_start:
+        delta_sec = time_since_last if time_since_last > 0 else (300.0 if velocity_5m > 0 else 3600.0)
+        if delta_sec <= 3600.0:
+            speed_kmh = (geo_distance / max(delta_sec, 60)) * 3600
+            triggered_rules.append(f"IMPOSSIBLE_TRAVEL: {geo_distance:.1f} km jump within {delta_sec:.0f} seconds (~{speed_kmh:.0f} km/h)")
     if amount_deviation >= 3.5:
         triggered_rules.append(f"EXTREME_AMOUNT_DEVIATION: Spend is {amount_deviation:.1f} standard deviations above normal")
 
@@ -146,16 +155,16 @@ def get_merchant_risk_score(merchant_id: str) -> Dict[str, Any]:
     Returns:
         Dict with merchant category, chargeback rate, and assigned risk tier.
     """
-    # Deterministic mapping based on merchant id number
+    m_id_str = str(merchant_id or "MERCH_002")
     try:
-        clean_id = "".join(filter(str.isdigit, str(merchant_id)))
+        clean_id = "".join(filter(str.isdigit, m_id_str))
         m_idx = int(clean_id) % len(MERCHANT_CATALOG) if clean_id else 2
     except Exception:
         m_idx = 2
 
     info = MERCHANT_CATALOG[m_idx]
     return {
-        "merchant_id": merchant_id,
+        "merchant_id": m_id_str,
         "category": info["category"],
         "historical_chargeback_rate_pct": info["chargeback_rate_pct"],
         "merchant_risk_tier": info["risk_tier"]
@@ -176,18 +185,18 @@ def analyze_mule_ring_network(
     Returns:
         Dict containing mule ring detection flag, cluster risk level, connected customer accounts, and shared devices/IPs.
     """
+    cid = str(customer_id or "CUST_UNKNOWN")
     try:
         from graph.entity_graph import entity_graph
-        if device_id or ip_address:
-            entity_graph.add_transaction_entities(customer_id, device_id=device_id, ip_address=ip_address)
-        return entity_graph.analyze_customer_syndicate(customer_id)
+        # Read-only query: do not mutate graph state during investigative inspection
+        return entity_graph.analyze_customer_syndicate(cid)
     except Exception as e:
         logger.warning("Mule ring graph analysis failed: {err}", err=str(e))
         return {
-            "customer_id": customer_id,
+            "customer_id": cid,
             "mule_ring_detected": False,
             "cluster_risk_level": "LOW",
-            "connected_customers": [customer_id],
+            "connected_customers": [cid],
             "shared_devices": [],
             "shared_ips": [],
             "cluster_size": 1,

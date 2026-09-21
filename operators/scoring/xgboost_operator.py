@@ -37,7 +37,7 @@ class XGBoostScorerOperator(BaseScorerOperator):
         self.metadata_path = DEFAULT_METADATA_PATH
         self.model = None
         self.feature_names = FEATURE_COLUMNS
-        self.calibrated_threshold = 0.5
+        self.calibrated_threshold = 0.38
         self.load_model()
 
     def load_model(self):
@@ -52,7 +52,7 @@ class XGBoostScorerOperator(BaseScorerOperator):
                     with open(self.metadata_path, "r", encoding="utf-8") as f:
                         meta = json.load(f)
                         self.feature_names = meta.get("features", FEATURE_COLUMNS)
-                        self.calibrated_threshold = meta.get("optimal_threshold", 0.5)
+                        self.calibrated_threshold = meta.get("optimal_threshold", 0.38)
                         logger.info("Loaded model metadata: Strategy={strat} | PR-AUC={pr:.4f} | Optimal Thresh={th}",
                                     strat=meta.get("champion_strategy"),
                                     pr=meta.get("pr_auc", 0.0),

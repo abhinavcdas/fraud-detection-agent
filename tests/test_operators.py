@@ -119,3 +119,91 @@ def test_heuristic_scorer():
 
     fraud_tx = {"amount": 6000.0, "velocity_5m": 4, "geo_distance_km": 800.0}
     assert scorer.predict_proba(fraud_tx) >= 0.8
+
+@pytest.mark.asyncio
+async def test_sqlite_storage_batch_and_wal(tmp_path):
+    db_file = str(tmp_path / "test_batch.db")
+    storage = SqliteStorageOperator(db_path=db_file)
+    await storage.initialize()
+
+    # Verify WAL mode
+    with storage._get_connection() as conn:
+        mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    # Batch raw transactions
+    tx_batch = [
+        {"transaction_id": f"TX_B_{i}", "customer_id": "CUST_B", "amount": 10.0 * i, "timestamp": "2026-09-18T12:00:00"}
+        for i in range(5)
+    ]
+    await storage.save_raw_transactions_batch(tx_batch)
+    history = await storage.get_customer_history("CUST_B", limit=10)
+    assert len(history) == 5
+
+    # Batch engineered features
+    feat_batch = [
+        {"transaction_id": f"TX_B_{i}", "customer_id": "CUST_B", "amount": 10.0 * i, "velocity_5m": i}
+        for i in range(5)
+    ]
+    await storage.save_engineered_features_batch(feat_batch)
+
+    await storage.close()
+
+def test_storage_and_stream_factory_singletons():
+    from operators.storage.storage_factory import get_storage_operator, reset_storage_operators
+    from operators.stream.stream_factory import get_stream_operator, reset_stream_operators
+
+    reset_storage_operators()
+    s1 = get_storage_operator("sqlite")
+    s2 = get_storage_operator("sqlite")
+    assert s1 is s2
+    reset_storage_operators()
+    s3 = get_storage_operator("sqlite")
+    assert s1 is not s3
+
+    reset_stream_operators()
+    st1 = get_stream_operator("memory")
+    st2 = get_stream_operator("memory")
+    assert st1 is st2
+    reset_stream_operators()
+    st3 = get_stream_operator("memory")
+    assert st1 is not st3
+
+@pytest.mark.asyncio
+async def test_kafka_stream_operator_mocked(monkeypatch):
+    import sys
+    from unittest.mock import MagicMock
+    from operators.stream.kafka_operator import KafkaStreamOperator
+
+    mock_producer = MagicMock()
+    mock_future = MagicMock()
+    mock_future.get.return_value = MagicMock()
+    mock_producer.send.return_value = mock_future
+
+    mock_consumer = MagicMock()
+    mock_consumer.poll.return_value = {}
+
+    fake_kafka_mod = MagicMock()
+    fake_kafka_mod.KafkaProducer = MagicMock(return_value=mock_producer)
+    fake_kafka_mod.KafkaConsumer = MagicMock(return_value=mock_consumer)
+    fake_kafka_mod.TopicPartition = MagicMock()
+    fake_kafka_mod.OffsetAndMetadata = MagicMock()
+    monkeypatch.setitem(sys.modules, "kafka", fake_kafka_mod)
+
+    kafka_op = KafkaStreamOperator(bootstrap_servers="localhost:9092")
+    await kafka_op.start()
+
+    # Test publish with partition key
+    await kafka_op.publish("transactions", {"transaction_id": "TX_K_1", "customer_id": "CUST_77", "amount": 100.0})
+    mock_producer.send.assert_called_once()
+    call_kwargs = mock_producer.send.call_args
+    assert call_kwargs[1]["key"] == b"CUST_77"
+
+    # Test commit_offset
+    kafka_op.consumer = mock_consumer
+    await kafka_op.commit_offset("transactions", 0, 100)
+    mock_consumer.commit.assert_called_once()
+
+    await kafka_op.close()
+
+

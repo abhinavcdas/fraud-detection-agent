@@ -32,15 +32,40 @@ def compute_input_hash(transaction: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
+def compute_record_seal(record: Dict[str, Any], prev_hash: str = "") -> str:
+    """Compute cryptographic SHA-256 seal covering inputs, decisions, and optional Merkle link.
+    
+    Args:
+        record: Constructed audit record dictionary.
+        prev_hash: SHA-256 hash of previous audit record for Merkle verification.
+        
+    Returns:
+        Hex-encoded SHA-256 cryptographic seal.
+    """
+    seal_payload = {
+        "prev_hash": prev_hash,
+        "transaction_id": record.get("transaction_id"),
+        "timestamp": record.get("timestamp"),
+        "input_hash": record.get("input_hash"),
+        "fraud_score": record.get("fraud_score"),
+        "is_flagged": record.get("is_flagged"),
+        "agent_decision": record.get("agent_decision"),
+        "model_version": record.get("model_version")
+    }
+    canonical = json.dumps(seal_payload, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def build_audit_record(
     transaction: Dict[str, Any],
     fraud_score: float,
     is_flagged: bool,
     model_version: str = "fraud-xgb-v1",
     agent_result: Optional[Dict[str, Any]] = None,
-    latency_ms: float = 0.0
+    latency_ms: float = 0.0,
+    prev_record_hash: str = ""
 ) -> Dict[str, Any]:
-    """Construct an immutable audit record matching the audit_log schema.
+    """Construct an immutable audit record matching the audit_log schema with cryptographic sealing.
     
     Args:
         transaction: Scored transaction dictionary.
@@ -49,9 +74,10 @@ def build_audit_record(
         model_version: Serialized model identifier.
         agent_result: Output dossier from LLM investigation agent (if triggered).
         latency_ms: Total end-to-end processing latency.
+        prev_record_hash: Cryptographic seal of preceding audit entry for Merkle chaining.
         
     Returns:
-        Dict conforming to audit_log table specifications.
+        Dict conforming to audit_log table specifications and cryptographically sealed.
     """
     input_hash = compute_input_hash(transaction)
     tx_id = transaction.get("transaction_id", "UNKNOWN")
@@ -72,7 +98,7 @@ def build_audit_record(
     elif is_flagged:
         agent_decision = "FLAGGED_PENDING_REVIEW"
 
-    return {
+    rec = {
         "transaction_id": tx_id,
         "timestamp": now_iso,
         "input_hash": input_hash,
@@ -85,3 +111,6 @@ def build_audit_record(
         "faithfulness_score": faithfulness_score,
         "latency_ms": round(float(latency_ms), 2)
     }
+    rec["record_hash"] = compute_record_seal(rec, prev_hash=prev_record_hash)
+    rec["prev_record_hash"] = prev_record_hash
+    return rec

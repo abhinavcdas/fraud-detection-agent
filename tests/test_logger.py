@@ -16,3 +16,10 @@ def test_contextual_binding():
 
 def test_log_file_created():
     assert LOG_FILE.parent.exists()
+
+def test_pan_masking():
+    from core.logger import PAN_REGEX, mask_pan
+    raw_text = "Processing payment with card 4111119912345678 at checkout"
+    masked = PAN_REGEX.sub(mask_pan, raw_text)
+    assert "411111******5678" in masked
+    assert "4111119912345678" not in masked

@@ -199,12 +199,38 @@ def configure_mlflow(tracking_uri: str = None, experiment_name: str = "fraud-det
     except Exception as e:
         logger.warning("Could not set experiment {exp}: {err}", exp=experiment_name, err=str(e))
 
+def export_champion_to_onnx(model, target_path: Path, feature_count: int = len(FEATURE_COLUMNS)) -> bool:
+    """Automated export of champion model to ONNX runtime format."""
+    try:
+        from onnxmltools import convert_xgboost, convert_lightgbm
+        from skl2onnx.common.data_types import FloatTensorType
+
+        initial_type = [("float_input", FloatTensorType([None, feature_count]))]
+        model_type = type(model).__name__.lower()
+
+        if "xgb" in model_type:
+            onnx_model = convert_xgboost(model, initial_types=initial_type, target_opset=15)
+        elif "lgb" in model_type:
+            onnx_model = convert_lightgbm(model, initial_types=initial_type, target_opset=15)
+        else:
+            from skl2onnx import convert_sklearn
+            onnx_model = convert_sklearn(model, initial_types=initial_type, target_opset=15)
+
+        with open(target_path, "wb") as f:
+            f.write(onnx_model.SerializeToString())
+        logger.info("Successfully exported champion model to ONNX: {path}", path=target_path)
+        return True
+    except Exception as e:
+        logger.warning("Could not export champion model to ONNX ({err}).", err=str(e))
+        return False
+
 def train_and_compare_strategies(
     df: pd.DataFrame,
     tracking_uri: str = None,
     experiment_name: str = "fraud-detection-experiments",
     registry_dir: Path = None,
-    n_estimators: int = 100
+    n_estimators: int = 100,
+    time_based_split: bool = True
 ) -> Dict[str, Any]:
     """Train and compare 3 imbalance strategies with MLflow logging."""
     target_registry = Path(registry_dir) if registry_dir else REGISTRY_DIR
@@ -220,17 +246,43 @@ def train_and_compare_strategies(
     logger.info("Dataset shape: X={shape}, Fraud cases: {count} ({rate:.3f}%)",
                 shape=X.shape, count=total_fraud, rate=fraud_rate)
 
-    # Stratified 80/20 train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.20,
-        random_state=42,
-        stratify=y
-    )
+    # Chronological Time-Series Split to eliminate lookahead target leakage (OCC 2011-12 / SR 11-7 compliance)
+    if time_based_split and "time_step" in df.columns:
+        df_sorted = df.sort_values("time_step").reset_index(drop=True)
+        split_idx = int(len(df_sorted) * 0.80)
+        train_slice = df_sorted.iloc[:split_idx]
+        test_slice = df_sorted.iloc[split_idx:]
+        
+        # Verify both partitions have positive fraud instances
+        if train_slice["is_fraud"].sum() > 0 and test_slice["is_fraud"].sum() > 0:
+            X_train = train_slice[FEATURE_COLUMNS]
+            y_train = train_slice["is_fraud"].astype(int)
+            X_test = test_slice[FEATURE_COLUMNS]
+            y_test = test_slice["is_fraud"].astype(int)
+            logger.info("Chronological Split: Train={n_tr} ({tr_f} fraud) | Test={n_te} ({te_f} fraud)",
+                        n_tr=len(X_train), tr_f=int(y_train.sum()),
+                        n_te=len(X_test), te_f=int(y_test.sum()))
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y,
+                test_size=0.20,
+                random_state=42,
+                stratify=y
+            )
+            logger.info("Stratified Split (fallback): Train={n_tr} ({tr_f} fraud) | Test={n_te} ({te_f} fraud)",
+                        n_tr=len(X_train), tr_f=int(y_train.sum()),
+                        n_te=len(X_test), te_f=int(y_test.sum()))
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y,
+            test_size=0.20,
+            random_state=42,
+            stratify=y
+        )
+        logger.info("Stratified Split: Train={n_tr} ({tr_f} fraud) | Test={n_te} ({te_f} fraud)",
+                    n_tr=len(X_train), tr_f=int(y_train.sum()),
+                    n_te=len(X_test), te_f=int(y_test.sum()))
 
-    logger.info("Stratified Split: Train={n_tr} ({tr_f} fraud) | Test={n_te} ({te_f} fraud)",
-                n_tr=len(X_train), tr_f=int(y_train.sum()),
-                n_te=len(X_test), te_f=int(y_test.sum()))
 
     pos_count = max(int(y_train.sum()), 1)
     neg_count = len(y_train) - pos_count
@@ -386,6 +438,11 @@ def train_and_compare_strategies(
     artifact_path = target_registry / "fraud_xgb_v1.joblib"
     joblib.dump(champion["model"], artifact_path)
     logger.info("Champion model exported to: {path}", path=artifact_path)
+
+    # Automated ONNX export for low-latency serving
+    onnx_path = target_registry / "fraud_xgb_v1.onnx"
+    export_champion_to_onnx(champion["model"], onnx_path)
+
 
     # Save model metadata
     metadata = {

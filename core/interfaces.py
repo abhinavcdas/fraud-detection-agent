@@ -41,6 +41,16 @@ class BaseStorageOperator(ABC):
         """Retrieve audit record for a given transaction ID to reconstruct decisions."""
         pass
 
+    async def save_raw_transactions_batch(self, txs: List[Dict[str, Any]]) -> None:
+        """Batch persist ingested raw transactions. Default delegates sequentially."""
+        for tx in txs:
+            await self.save_raw_transaction(tx)
+
+    async def save_engineered_features_batch(self, features_list: List[Dict[str, Any]]) -> None:
+        """Batch persist computed rolling features. Default delegates sequentially."""
+        for feats in features_list:
+            await self.save_engineered_features(feats)
+
     @abstractmethod
     async def close(self) -> None:
         """Close connection pools cleanly."""
@@ -64,6 +74,10 @@ class BaseStreamOperator(ABC):
     async def consume(self, topic: str) -> AsyncGenerator[Dict[str, Any], None]:
         """Consume stream of events asynchronously."""
         yield {} # Type stub
+
+    async def commit_offset(self, topic: str, partition: int, offset: int) -> None:
+        """Explicitly commit offset for at-least-once message processing semantics."""
+        pass
 
     @abstractmethod
     async def close(self) -> None:
@@ -96,6 +110,12 @@ class BaseScorerOperator(ABC):
     def score_transaction(self, features: Dict[str, Any]) -> float:
         """Convenience alias for predict_proba."""
         return self.predict_proba(features)
+
+    async def predict_proba_async(self, features: Dict[str, Any]) -> float:
+        """Asynchronously compute fraud probability score without blocking event loop."""
+        import asyncio
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.predict_proba, features)
 
     @abstractmethod
     def get_model_version(self) -> str:

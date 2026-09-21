@@ -149,3 +149,44 @@ def test_mule_ring_graph_endpoint():
     assert data["analysis"]["mule_ring_detected"] is True
     assert "DEV_FARM_01" in data["analysis"]["shared_devices"]
 
+
+def test_score_endpoint_async_triage():
+    """Verify async_triage=True returns immediately without waiting for LLM investigation."""
+    tx = {
+        "transaction_id": "TX_ASYNC_TRIAGE_01",
+        "customer_id": "CUST_0042",
+        "merchant_id": "MERCH_002",
+        "amount": 2850.00,
+        "velocity_5m": 5,
+        "velocity_60m": 8,
+        "amount_deviation": 4.5,
+        "geo_distance_km": 720.0,
+        "time_since_last_tx_sec": 30.0
+    }
+    response = client.post("/score?async_triage=true", json=tx)
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["transaction_id"] == "TX_ASYNC_TRIAGE_01"
+    assert data["is_flagged"] is True
+    assert data["action"] == "INVESTIGATE_ASYNC"
+    assert data["pipeline_stage"] == "HOT_PATH_SCORING_COMPLETE_ASYNC_TRIAGE_QUEUED"
+    assert data["investigation_dossier"]["status"] == "QUEUED_FOR_TRIAGE"
+
+
+def test_score_endpoint_pan_sanitization():
+    """Verify PCI-DSS 3.4 Card PAN is sanitized/masked."""
+    from api.main import sanitize_card_pan
+    masked = sanitize_card_pan("4242424242421234")
+    assert masked == "424242******1234"
+
+    tx = {
+        "transaction_id": "TX_PAN_TEST_01",
+        "customer_id": "CUST_0180",
+        "card_number": "4111112233445566",
+        "amount": 25.00
+    }
+    response = client.post("/score", json=tx)
+    assert response.status_code == 200
+
+

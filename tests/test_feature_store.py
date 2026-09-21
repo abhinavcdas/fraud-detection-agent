@@ -40,3 +40,31 @@ async def test_sliding_window_counts_and_speed():
     assert features["lookup_latency_ms"] < 25.0  # Sub-25ms even in python emulation
 
     await store.close()
+
+def test_haversine_domain_clamping():
+    """Verify haversine handles None and edge coordinates without math domain error."""
+    assert calculate_haversine_distance(None, None, 10.0, 20.0) == 0.0
+    # Identical points
+    assert calculate_haversine_distance(90.0, 180.0, 90.0, 180.0) == 0.0
+    # Antipodal points
+    assert calculate_haversine_distance(-90.0, 0.0, 90.0, 0.0) > 19000.0
+
+@pytest.mark.asyncio
+async def test_redis_store_runtime_resilience():
+    """Verify fallback to in-memory buffer when Redis operations fail."""
+    from unittest.mock import MagicMock
+    store = RedisFeatureStore(redis_url="redis://localhost:6379/15")
+    # Simulate broken client that throws ConnectionError
+    mock_client = MagicMock()
+    mock_client.zadd.side_effect = ConnectionError("Redis crashed")
+    mock_client.zrangebyscore.side_effect = ConnectionError("Redis crashed")
+    mock_client.ping.return_value = False
+    store.client = mock_client
+
+    assert store.is_healthy() is False
+
+    # Should not raise exception
+    await store.record_event("CUST_RESILIENT", timestamp=100.0, amount=50.0)
+    feats = await store.get_sliding_window_features("CUST_RESILIENT", current_timestamp=105.0)
+    assert feats["velocity_10s"] == 1
+

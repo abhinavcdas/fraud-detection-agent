@@ -17,11 +17,13 @@ import json
 import os
 import sys
 import time
+import re
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -40,6 +42,16 @@ from model.shap_explain import load_champion_model, get_top_contributing_feature
 
 load_dotenv()
 logger = get_logger("api_server")
+
+def sanitize_card_pan(card: Optional[str]) -> Optional[str]:
+    """PCI-DSS 3.4: Redact Primary Account Numbers keeping BIN (first 6) and last 4."""
+    if not card or not isinstance(card, str):
+        return card
+    digits = re.sub(r"\D", "", card)
+    if 13 <= len(digits) <= 19:
+        return f"{digits[:6]}******{digits[-4:]}"
+    return card
+
 
 FRAUD_THRESHOLD = float(os.getenv("FRAUD_THRESHOLD", "0.38"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", "fraud-xgb-v1")
@@ -174,23 +186,34 @@ def health_check():
 
 
 @app.post("/score", response_model=ScoreResponse)
-async def score_transaction(payload: TransactionPayload):
+async def score_transaction(
+    payload: TransactionPayload,
+    background_tasks: BackgroundTasks,
+    async_triage: bool = Query(False, description="Decouple forensic triage to non-blocking background queue")
+):
     """Dual-Path real-time transaction authorization and forensic triage:
     
-    HOT PATH (< 50ms):
+    HOT PATH (< 15ms target):
     1. Query Redis Sliding-Window Feature Store for dynamic velocity & impossible travel delta.
     2. Evaluate Deterministic Hard Rules Engine (sanctions, caps, killswitches).
        - If BLOCK: Short-circuit immediately with 0 ML latency.
     3. Run Ultra-Fast ML Inference (ONNX Runtime / XGBoost).
+    4. Sanitize incoming credit card numbers per PCI-DSS 3.4.
 
-    COLD PATH (Asynchronous / Decoupled):
-    4. If flagged or STEP_UP:
-       - Run Entity Resolution Graph Mining for money mule rings.
-       - Compile LLM forensic dossier & FinCEN-compliant SAR narrative.
-    5. Asynchronously persist audit trail and record transaction in feature store.
+    COLD PATH (Decoupled / Non-Blocking):
+    5. If flagged or STEP_UP:
+       - Run Entity Resolution Graph Mining for money mule rings in executor thread.
+       - Compile LLM forensic dossier & FinCEN-compliant SAR narrative in executor thread.
+       - Or queue asynchronously when async_triage=True for ultra-low latency SLAs.
+    6. Asynchronously persist audit trail and record transaction in feature store via asyncio.gather.
     """
     start_time = time.time()
     tx = payload.model_dump()
+    
+    # PCI-DSS 3.4 Card PAN Sanitization
+    if tx.get("card_number"):
+        tx["card_number"] = sanitize_card_pan(tx["card_number"])
+
     tx_id = tx["transaction_id"]
     cust_id = tx["customer_id"]
 
@@ -201,6 +224,8 @@ async def score_transaction(payload: TransactionPayload):
     active_storage = storage_op or get_storage_operator("sqlite")
     active_rules = rules_engine or DeterministicRulesEngine()
     active_feat_store = feature_store or RedisFeatureStore()
+
+    loop = asyncio.get_running_loop()
 
     # Hot Path 1: Sliding Window Features from Feature Store
     now_ts = time.time()
@@ -244,14 +269,14 @@ async def score_transaction(payload: TransactionPayload):
             agent_result=agent_res_block,
             latency_ms=latency_ms
         )
-        try:
-            await active_storage.save_audit_log(audit_record)
-        except Exception as e:
-            tx_logger.error("Failed to write audit log: {err}", err=str(e))
 
-        # Record event in background
-        await active_feat_store.record_event(
-            cust_id, now_ts, tx["amount"], tx.get("ip_address"), tx.get("lat"), tx.get("lon")
+        # Concurrent persistence
+        await asyncio.gather(
+            active_storage.save_audit_log(audit_record),
+            active_feat_store.record_event(
+                cust_id, now_ts, tx["amount"], tx.get("ip_address"), tx.get("lat"), tx.get("lon")
+            ),
+            return_exceptions=True
         )
 
         return ScoreResponse(
@@ -271,7 +296,6 @@ async def score_transaction(payload: TransactionPayload):
             latency_ms=latency_ms
         )
 
-
     # Hot Path 3: Ultra-Fast ML Inference (ONNX / XGBoost)
     try:
         fraud_score = active_scorer.predict_proba(tx)
@@ -285,33 +309,78 @@ async def score_transaction(payload: TransactionPayload):
     agent_result = None
     top_factors = None
     mule_analysis = None
+    pipeline_stage = "DUAL_PATH_HOT_COLD_INSPECTION"
 
     # Cold Path 4: Asynchronous Forensic & Graph Investigation for Flagged Events
     if is_flagged:
         tx_logger.info("Transaction flagged ({s:.3f} >= {th:.2f}). Running graph & agent triage.",
                        s=fraud_score, th=FRAUD_THRESHOLD)
 
-        # Entity graph resolution
-        entity_graph.add_transaction_entities(
-            cust_id,
-            device_id=tx.get("device_id"),
-            ip_address=tx.get("ip_address"),
-            card_id=tx.get("card_number")
-        )
-        mule_analysis = entity_graph.analyze_customer_syndicate(cust_id)
+        if async_triage:
+            action = "INVESTIGATE_ASYNC"
+            pipeline_stage = "HOT_PATH_SCORING_COMPLETE_ASYNC_TRIAGE_QUEUED"
+            agent_result = {
+                "status": "QUEUED_FOR_TRIAGE",
+                "message": "Forensic triage scheduled asynchronously to protect <15ms SLA."
+            }
 
-        # Agent investigation with FinCEN SAR generation
-        agent_result = run_investigation(tx)
+            async def _cold_triage_worker(tx_data, cust, score, flagged):
+                w_loop = asyncio.get_running_loop()
+                await w_loop.run_in_executor(
+                    None,
+                    entity_graph.add_transaction_entities,
+                    cust,
+                    tx_data.get("device_id"),
+                    tx_data.get("ip_address"),
+                    tx_data.get("card_number")
+                )
+                investigation = await w_loop.run_in_executor(None, run_investigation, tx_data)
+                record = build_audit_record(
+                    transaction=tx_data,
+                    fraud_score=score,
+                    is_flagged=flagged,
+                    model_version=active_scorer.get_model_version(),
+                    agent_result=investigation,
+                    latency_ms=0.0
+                )
+                try:
+                    await active_storage.save_audit_log(record)
+                except Exception as ex:
+                    logger.error("Async triage audit write error: {err}", err=str(ex))
 
-        if champion_model:
-            try:
-                top_factors = get_top_contributing_features(champion_model, tx, top_k=5)
-            except Exception as e:
-                tx_logger.warning("SHAP feature extraction error: {err}", err=str(e))
+            background_tasks.add_task(_cold_triage_worker, tx.copy(), cust_id, fraud_score, is_flagged)
+        else:
+            # Offload heavy synchronous calls to worker threadpool: event loop NEVER freezes!
+            await loop.run_in_executor(
+                None,
+                entity_graph.add_transaction_entities,
+                cust_id,
+                tx.get("device_id"),
+                tx.get("ip_address"),
+                tx.get("card_number")
+            )
+            mule_analysis = await loop.run_in_executor(
+                None,
+                entity_graph.analyze_customer_syndicate,
+                cust_id
+            )
+            agent_result = await loop.run_in_executor(None, run_investigation, tx)
+
+            if champion_model:
+                try:
+                    top_factors = await loop.run_in_executor(
+                        None,
+                        get_top_contributing_features,
+                        champion_model,
+                        tx,
+                        5
+                    )
+                except Exception as e:
+                    tx_logger.warning("SHAP feature extraction error: {err}", err=str(e))
 
     latency_ms = round((time.time() - start_time) * 1000, 2)
 
-    # Hot Path 5: Audit Log & Feature Store Update
+    # Hot Path 5: Audit Log & Feature Store Update (Concurrent)
     audit_record = build_audit_record(
         transaction=tx,
         fraud_score=fraud_score,
@@ -321,14 +390,12 @@ async def score_transaction(payload: TransactionPayload):
         latency_ms=latency_ms
     )
 
-    try:
-        await active_storage.save_audit_log(audit_record)
-    except Exception as e:
-        tx_logger.error("Failed to write audit log: {err}", err=str(e))
-
-    # Record event in sliding window
-    await active_feat_store.record_event(
-        cust_id, now_ts, tx["amount"], tx.get("ip_address"), tx.get("lat"), tx.get("lon")
+    await asyncio.gather(
+        active_storage.save_audit_log(audit_record),
+        active_feat_store.record_event(
+            cust_id, now_ts, tx["amount"], tx.get("ip_address"), tx.get("lat"), tx.get("lon")
+        ),
+        return_exceptions=True
     )
 
     return ScoreResponse(
@@ -338,7 +405,7 @@ async def score_transaction(payload: TransactionPayload):
         threshold=FRAUD_THRESHOLD,
         model_version=active_scorer.get_model_version(),
         action=action,
-        pipeline_stage="DUAL_PATH_HOT_COLD_INSPECTION",
+        pipeline_stage=pipeline_stage,
         rule_decision=rule_res,
         sliding_window_features=sliding_feats,
         mule_ring_analysis=mule_analysis,
@@ -357,14 +424,16 @@ def evaluate_rules_endpoint(payload: Dict[str, Any]):
 
 
 @app.get("/graph/mule-ring/{customer_id}")
-def get_mule_ring_graph(customer_id: str):
-    """Retrieve multi-entity ego-network and mule ring clustering for a customer."""
-    syndicate = entity_graph.analyze_customer_syndicate(customer_id)
-    subgraph_data = entity_graph.get_cluster_subgraph_data(customer_id)
+async def get_mule_ring_graph(customer_id: str):
+    """Retrieve multi-entity ego-network and mule ring clustering for a customer (non-blocking)."""
+    loop = asyncio.get_running_loop()
+    syndicate = await loop.run_in_executor(None, entity_graph.analyze_customer_syndicate, customer_id)
+    subgraph_data = await loop.run_in_executor(None, entity_graph.get_cluster_subgraph_data, customer_id)
     return {
         "analysis": syndicate,
         "graph_data": subgraph_data
     }
+
 
 
 @app.get("/benchmarks/latency")

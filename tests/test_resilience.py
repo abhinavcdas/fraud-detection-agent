@@ -101,3 +101,26 @@ async def test_dlq_handles_poisoned_messages_without_stopping_stream():
     assert "TX_VALID_02" in storage.raw_transactions
 
     await orchestrator.close()
+
+@pytest.mark.asyncio
+async def test_isolated_async_execution_preserves_args():
+    """Verify that isolated_async_execution preserves positional and keyword arguments."""
+    from core.resilience import isolated_async_execution
+
+    received = {}
+
+    def fallback_factory(exc, args, kwargs):
+        received["exc"] = str(exc)
+        received["args"] = args
+        received["kwargs"] = kwargs
+        return "FALLBACK_CALLED"
+
+    @isolated_async_execution(fallback_factory)
+    async def risky_function(x, y, multiplier=1):
+        raise RuntimeError("Something exploded")
+
+    res = await risky_function(10, 20, multiplier=3)
+    assert res == "FALLBACK_CALLED"
+    assert received["args"] == (10, 20)
+    assert received["kwargs"] == {"multiplier": 3}
+    assert "Something exploded" in received["exc"]

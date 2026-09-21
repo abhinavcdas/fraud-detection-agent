@@ -154,7 +154,7 @@ def generate_markdown_report(stats: Dict[str, Any]) -> Path:
     rules = stats["rules_stats"]
     onnx_hp = stats["onnx_hotpath_stats"]
 
-    content = f"""# Tier-1 Banking Fraud Engine Latency & Throughput Benchmark
+    content = f"""# High-Throughput Fraud Engine Latency & Throughput Benchmark
 
 This benchmark evaluates the **Inline Hot Path** under high concurrency, measuring execution time across deterministic rules, in-memory sliding-window feature retrieval, and ONNX Runtime model inference.
 
@@ -162,7 +162,7 @@ This benchmark evaluates the **Inline Hot Path** under high concurrency, measuri
 
 ## 1. Executive Summary & Production SLA Compliance
 
-* **Target Hot-Path SLA:** $< 50.0\\text{{ ms}}$ (Tier-1 Card Networks: Visa, Mastercard, Stripe)
+* **Target Hot-Path SLA:** $< 50.0\\text{{ ms}}$ (Industry Card Networks: Visa, Mastercard, Stripe)
 * **Pure ONNX Hot-Path p95 Latency:** **{onnx_hp['p95']:.2f} ms** (Status: **PASS / ULTRA-LOW LATENCY**)
 * **Pure ONNX Hot-Path p99 Latency:** **{onnx_hp['p99']:.2f} ms** (Status: **PASS / ULTRA-LOW LATENCY**)
 * **Peak Throughput:** **{stats['throughput_rps']:,.1f} requests/sec** under {stats['concurrency']} concurrent workers

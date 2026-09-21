@@ -1,4 +1,4 @@
-# Tier-1 Banking Fraud Engine Latency & Throughput Benchmark
+# High-Throughput Fraud Engine Latency & Throughput Benchmark
 
 This benchmark evaluates the **Inline Hot Path** under high concurrency, measuring execution time across deterministic rules, in-memory sliding-window feature retrieval, and ONNX Runtime model inference.
 
@@ -6,7 +6,7 @@ This benchmark evaluates the **Inline Hot Path** under high concurrency, measuri
 
 ## 1. Executive Summary & Production SLA Compliance
 
-* **Target Hot-Path SLA:** $< 50.0\text{ ms}$ (Tier-1 Card Networks: Visa, Mastercard, Stripe)
+* **Target Hot-Path SLA:** $< 50.0\text{ ms}$ (Industry Card Networks: Visa, Mastercard, Stripe)
 * **Pure ONNX Hot-Path p95 Latency:** **1.38 ms** (Status: **PASS / ULTRA-LOW LATENCY**)
 * **Pure ONNX Hot-Path p99 Latency:** **1.59 ms** (Status: **PASS / ULTRA-LOW LATENCY**)
 * **Peak Throughput:** **60.4 requests/sec** under 50 concurrent workers

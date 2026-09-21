@@ -1,12 +1,12 @@
 # Real-Time Fraud Detection & Autonomous Forensic Triage Engine
 
-[![CI Pipeline](https://github.com/fintech-risk/fraud-detection-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fintech-risk/fraud-detection-agent/actions)
+[![CI Pipeline](https://github.com/abhinavcdas/fraud-detection-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinavcdas/fraud-detection-agent/actions)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![PR-AUC: 0.9868](https://img.shields.io/badge/PR--AUC-0.9868-brightgreen.svg)](reports/model_scorecard.md)
 [![Hot-Path p95: 1.38ms](https://img.shields.io/badge/p95_Latency-1.38ms-success.svg)](reports/latency_benchmark.md)
 [![Tests: 70 Passed](https://img.shields.io/badge/Tests-70_Passed-success.svg)](tests/)
 
-An enterprise-grade, **Dual-Path Streaming Fraud Prevention & Regulatory Triage Platform** modeled after tier-1 banking risk engines (Stripe, Visa, JPMorgan). 
+A production-grade, **Dual-Path Streaming Fraud Prevention & Regulatory Triage Platform** designed for real-time payment networks and forensic risk investigation. 
 
 The platform separates the **Inline Hot Path** (strict $< 50\text{ ms}$ authorization SLA) from the **Asynchronous Cold Path** (entity resolution graph mining, money mule ring detection, and automated FinCEN-compliant Suspicious Activity Report generation).
 

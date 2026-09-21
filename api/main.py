@@ -85,9 +85,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Real-Time Fraud Detection & LLM Investigation API",
-    description="Tier-1 dual-path streaming transaction scoring with low-latency Redis feature caching, deterministic hard rules, ONNX inference, and Groq agent forensic review.",
-    version="2.0.0",
+    title="Real-Time Fraud Prevention Engine",
+    description="Production-grade dual-path streaming transaction scoring with low-latency Redis feature caching, deterministic hard rules, ONNX inference, and Groq agent forensic review.",
+    version="1.1.0",
     lifespan=lifespan
 )
 

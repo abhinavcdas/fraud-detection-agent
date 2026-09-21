@@ -1,6 +1,6 @@
 """Streamlit Operations & Forensic Investigation Console.
 
-Fintech Tier-1 Anti-Fraud & Regulatory Investigation Dashboard:
+Fintech Anti-Fraud & Regulatory Investigation Dashboard:
 - Real-Time Flagged Transaction Queue
 - LLM Forensic Agent Dossier Viewer
 - FinCEN Form 111 Regulatory Suspicious Activity Report (SAR) Generator
